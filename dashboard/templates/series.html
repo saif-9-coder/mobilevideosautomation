@@ -1,8 +1,39 @@
 {% extends "base.html" %}{% block body %}
-<h2>{{ series.brand_name }} {{ series.name }}</h2>
+<h1>{{ series.brand_name }} {{ series.name }}</h1>
+<p>
+  <button class="btn" onclick="buildSeries({{ series.id }},this)">🎬 Full Series Video</button>
+  <span class="muted">poori series ki ek video ban jayegi</span>
+</p>
+
+{% if videos %}
+<h2>Series videos</h2>
 <div class="grid">
+{% for v in videos %}
+<div class="card"><b>#{{ v.id }}</b> {{ v.title }}
+<div class="muted">{{ v.status }} · {{ v.created_at or '' }}</div>
+{% if v.status=='ready' and v.file_path %}<div style="margin-top:8px"><video controls preload="none" src="/video-file/{{ v.id }}"></video></div>{% endif %}
+</div>
+{% endfor %}
+</div>
+{% endif %}
+
+<h2>Phones ({{ phones|length }})</h2>
+<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
 {% for p in phones %}
-<a class="card" href="/phone/{{ p.id }}"><b>{{ p.name }}</b><div class="muted">{{ p.announced or '' }}</div></a>
+<div class="card pcard">
+  {% if p.local_image %}<img class="phone tall" loading="lazy" src="/img/{{ p.id }}">{% endif %}
+  <b>{{ p.name }}</b>
+  <div class="muted">{{ p.announced or '' }}</div>
+  {% if p.key.display %}<div class="spec"><b>Display:</b> {{ p.key.display }}</div>{% endif %}
+  {% if p.key.chipset %}<div class="spec"><b>Chip:</b> {{ p.key.chipset }}</div>{% endif %}
+  {% if p.key.ram %}<div class="spec"><b>Memory:</b> {{ p.key.ram }}</div>{% endif %}
+  {% if p.key.battery %}<div class="spec"><b>Battery:</b> {{ p.key.battery }}</div>{% endif %}
+  {% if p.key.camera %}<div class="spec"><b>Camera:</b> {{ p.key.camera }}</div>{% endif %}
+  <div class="rowbtns">
+    <button class="btn ghost" onclick="mOpen({{ p.id }},'{{ p.name }}')">👁 Preview</button>
+    <button class="btn" onclick="buildPhone({{ p.id }},this)">🎬 Video</button>
+  </div>
+</div>
 {% endfor %}
 </div>
 {% endblock %}

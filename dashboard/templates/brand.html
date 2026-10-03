@@ -1,8 +1,10 @@
 {% extends "base.html" %}{% block body %}
-<h2>{{ brand.name }} — Series</h2>
+<h1>{{ brand.name }} <span class="muted">— series-wise</span></h1>
 <div class="grid">
 {% for s in series %}
-<a class="card" href="/series/{{ s.id }}"><b>{{ s.name }}</b><div class="muted">{{ s.phones }} phones</div></a>
+<a class="card" href="/series/{{ s.id }}"><b style="font-size:16px">{{ s.name }}</b>
+<div class="muted">{{ s.phones }} phones</div>
+<div class="rowbtns" style="margin-top:8px"><span class="btn ghost" style="font-size:12px">Open →</span></div></a>
 {% endfor %}
 </div>
 {% endblock %}

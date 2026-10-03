@@ -1,19 +1,79 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>MotoPhone Studio</title>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MotoPhone Studio</title>
 <style>
-body{font-family:system-ui,sans-serif;background:#0f1420;color:#e8ecf4;margin:0;padding:24px}
-a{color:#6ea8ff;text-decoration:none}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
-.card{background:#1a2233;border:1px solid #2a3550;border-radius:10px;padding:14px}
-.card:hover{border-color:#6ea8ff}h1{font-size:22px}.muted{color:#8b96ad;font-size:13px}
-.btn{background:#2f6df6;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer}
+body{font-family:system-ui,sans-serif;background:#0f1420;color:#e8ecf4;margin:0;padding:0}
+nav{background:#151c2e;border-bottom:1px solid #2a3550;padding:12px 24px;display:flex;gap:10px;align-items:center;position:sticky;top:0;z-index:10}
+nav .logo{font-weight:800;font-size:18px;margin-right:16px}
+nav a.nbtn{color:#e8ecf4;text-decoration:none;background:#232e48;border:1px solid #2a3550;border-radius:8px;padding:8px 16px;font-size:14px}
+nav a.nbtn:hover,nav a.nbtn.active{background:#2f6df6;border-color:#2f6df6}
+main{padding:24px;max-width:1200px;margin:0 auto}
+a{color:#6ea8ff;text-decoration:none}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+.card{background:#1a2233;border:1px solid #2a3550;border-radius:12px;padding:14px;position:relative}
+.card:hover{border-color:#6ea8ff}
+h1{font-size:22px}h2{font-size:19px;margin-top:28px}.muted{color:#8b96ad;font-size:13px}
+.btn{background:#2f6df6;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px}
+.btn.ghost{background:#232e48;border:1px solid #2a3550}
+.btn.danger{background:#c0392b}
+.btn:disabled{opacity:.5}
 table{border-collapse:collapse;width:100%;font-size:14px}
-td,th{border:1px solid #2a3550;padding:6px 10px;text-align:left;vertical-align:top}
+td,th{border:1px solid #2a3550;padding:8px 10px;text-align:left;vertical-align:top}
 th{background:#1a2233;color:#9fb2d8}
-img.phone{max-height:220px;background:#fff;border-radius:8px}
-video{max-width:720px;border-radius:10px}
-.topbar{display:flex;justify-content:space-between;align-items:center}
+img.phone{width:100%;height:190px;object-fit:contain;background:#fff;border-radius:8px}
+img.phone.tall{height:230px}
+video{max-width:100%;border-radius:10px;background:#000}
+.pcard{display:flex;flex-direction:column;gap:8px}
+.pcard .spec{font-size:13px;color:#c6cddd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pcard .spec b{color:#8b96ad;font-weight:600}
+.rowbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.series-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.chip{background:#232e48;border:1px solid #2a3550;border-radius:20px;padding:6px 14px;font-size:13px;color:#e8ecf4}
+.chip:hover{background:#2f6df6;border-color:#2f6df6;color:#fff}
+.chip .muted{color:#8b96ad}.chip:hover .muted{color:#dbe4ff}
+/* slideshow modal */
+#modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:12px}
+#modal.open{display:flex}
+#modal img{max-width:90vw;max-height:76vh;border-radius:10px}
+#modal .mrow{display:flex;gap:10px;align-items:center;color:#fff}
+#toast{position:fixed;bottom:20px;right:20px;background:#1a2233;border:1px solid #2f6df6;border-radius:10px;padding:12px 18px;display:none;z-index:60}
 </style></head>
 <body>
-<div class="topbar"><h1>📱 MotoPhone Studio</h1><a href="/">Brands</a></div>
+<nav>
+  <span class="logo">📱 MotoPhone Studio</span>
+  <a class="nbtn" href="/">🏠 Home</a>
+  <a class="nbtn" href="/manage">🛠 Manage</a>
+</nav>
+<main>
 {% block body %}{% endblock %}
+</main>
+<div id="modal">
+  <img id="mimg" src="">
+  <div class="mrow">
+    <button class="btn ghost" onclick="mPrev()">‹ Prev</button>
+    <span id="mcap" class="muted"></span>
+    <button class="btn ghost" onclick="mNext()">Next ›</button>
+    <button class="btn danger" onclick="mClose()">✕ Close</button>
+  </div>
+</div>
+<div id="toast"></div>
+<script>
+let mSlides=[], mIdx=0, mTimer=null;
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3000);}
+function mShow(i){mIdx=(i+mSlides.length)%mSlides.length;document.getElementById('mimg').src=mSlides[mIdx];
+  document.getElementById('mcap').textContent=(mIdx+1)+' / '+mSlides.length;}
+function mOpen(pid,title){mSlides=['/slide/'+pid+'/0','/slide/'+pid+'/1'];mShow(0);
+  document.getElementById('modal').classList.add('open');
+  clearInterval(mTimer);mTimer=setInterval(()=>mShow(mIdx+1),2500);}
+function mPrev(){clearInterval(mTimer);mShow(mIdx-1);}
+function mNext(){clearInterval(mTimer);mShow(mIdx+1);}
+function mClose(){clearInterval(mTimer);document.getElementById('modal').classList.remove('open');}
+document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='modal')mClose();});
+function buildPhone(pid,btn){btn.disabled=true;btn.textContent='⏳ Queued…';
+  fetch('/api/build-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_id:pid})})
+  .then(r=>r.json()).then(()=>{toast('Video build queued ✓');btn.textContent='✓ Queued';});}
+function buildSeries(sid,btn){btn.disabled=true;btn.textContent='⏳ Queued…';
+  fetch('/api/build-series-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series_id:sid})})
+  .then(r=>r.json()).then(()=>{toast('Full series video queued ✓');btn.textContent='✓ Queued';});}
+</script>
 </body></html>

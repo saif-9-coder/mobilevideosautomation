@@ -1,8 +1,25 @@
 {% extends "base.html" %}{% block body %}
-<h2>Brands ({{ brands|length }})</h2>
+<h1>Brands</h1>
+{% for item in brands %}
+<div class="card" style="margin-bottom:14px">
+  <a href="/brand/{{ item.brand.id }}" style="font-size:17px;font-weight:700;color:#fff">{{ item.brand.name }}</a>
+  <span class="muted">· {{ item.brand.phones }} phones</span>
+  <div class="series-chips">
+    {% for s in item.series %}
+    <a class="chip" href="/series/{{ s.id }}">{{ s.name }} <span class="muted">{{ s.phones }}</span></a>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+
+<h2>🎬 Recent videos</h2>
 <div class="grid">
-{% for b in brands %}
-<a class="card" href="/brand/{{ b.id }}"><b>{{ b.name }}</b><div class="muted">{{ b.phones }} phones</div></a>
+{% for v in videos %}
+<div class="card">
+  <b>#{{ v.id }}</b> {{ v.phone_name or v.title }}
+  <div class="muted">{{ v.style }} · {{ v.status }} · {{ v.created_at or '' }}</div>
+  {% if v.status=='ready' and v.file_path %}<div style="margin-top:8px"><video controls preload="none" src="/video-file/{{ v.id }}"></video></div>{% endif %}
+</div>
 {% endfor %}
 </div>
 {% endblock %}

@@ -1,0 +1,27 @@
+{% extends "base.html" %}{% block body %}
+<h1>🛠 Manage Videos</h1>
+<p><button class="btn danger" onclick="delSel()">🗑 Delete selected</button>
+<span class="muted" id="msg"></span></p>
+<table>
+<tr><th><input type="checkbox" id="all" onclick="document.querySelectorAll('.vc').forEach(c=>c.checked=this.checked)"></th>
+<th>ID</th><th>Title</th><th>Style</th><th>Status</th><th>Created</th><th>Watch</th></tr>
+{% for v in videos %}
+<tr>
+<td><input type="checkbox" class="vc" value="{{ v.id }}"></td>
+<td>{{ v.id }}</td>
+<td>{{ v.phone_name or v.title }}{% if v.series_name %} <span class="muted">({{ v.series_name }})</span>{% endif %}</td>
+<td>{{ v.style }}</td><td>{{ v.status }}</td><td class="muted">{{ v.created_at or '' }}</td>
+<td>{% if v.status=='ready' and v.file_path %}<video controls preload="none" style="max-width:280px" src="/video-file/{{ v.id }}"></video>{% else %}<span class="muted">—</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+<script>
+function delSel(){
+  const ids=[...document.querySelectorAll('.vc:checked')].map(c=>c.value);
+  if(!ids.length){toast('Kuch select karo pehle');return;}
+  if(!confirm(ids.length+' video(s) delete karni hain?'))return;
+  fetch('/api/delete-videos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})})
+  .then(r=>r.json()).then(d=>{toast(d.deleted+' deleted ✓');setTimeout(()=>location.reload(),800);});
+}
+</script>
+{% endblock %}
