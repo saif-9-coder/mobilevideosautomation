@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>MotoPhone Studio</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0f1420;color:#e8ecf4;margin:0;padding:24px}
+a{color:#6ea8ff;text-decoration:none}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+.card{background:#1a2233;border:1px solid #2a3550;border-radius:10px;padding:14px}
+.card:hover{border-color:#6ea8ff}h1{font-size:22px}.muted{color:#8b96ad;font-size:13px}
+.btn{background:#2f6df6;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer}
+table{border-collapse:collapse;width:100%;font-size:14px}
+td,th{border:1px solid #2a3550;padding:6px 10px;text-align:left;vertical-align:top}
+th{background:#1a2233;color:#9fb2d8}
+img.phone{max-height:220px;background:#fff;border-radius:8px}
+video{max-width:720px;border-radius:10px}
+.topbar{display:flex;justify-content:space-between;align-items:center}
+</style></head>
+<body>
+<div class="topbar"><h1>📱 MotoPhone Studio</h1><a href="/">Brands</a></div>
+{% block body %}{% endblock %}
+</body></html>

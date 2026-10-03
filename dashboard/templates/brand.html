@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block body %}
+<h2>{{ brand.name }} — Series</h2>
+<div class="grid">
+{% for s in series %}
+<a class="card" href="/series/{{ s.id }}"><b>{{ s.name }}</b><div class="muted">{{ s.phones }} phones</div></a>
+{% endfor %}
+</div>
+{% endblock %}

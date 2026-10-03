@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block body %}
+<h2>Brands ({{ brands|length }})</h2>
+<div class="grid">
+{% for b in brands %}
+<a class="card" href="/brand/{{ b.id }}"><b>{{ b.name }}</b><div class="muted">{{ b.phones }} phones</div></a>
+{% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}{% block body %}
+<h2>{{ phone.name }}</h2>
+{% if phone.local_image %}<img class="phone" src="/img/{{ phone.id }}">{% endif %}
+<p><button class="btn" onclick="buildVideo()">🎬 Build Video</button>
+<span class="muted" id="msg"></span></p>
+<h3>Specifications</h3>
+{% for section, fields in specs.items() %}
+<h4>{{ section }}</h4>
+<table>{% for k,v in fields.items() %}<tr><th style="width:220px">{{ k }}</th><td>{{ v }}</td></tr>{% endfor %}</table>
+{% endfor %}
+<h3>Videos</h3>
+{% for v in videos %}
+<div class="card" style="margin:8px 0"><b>#{{ v.id }}</b> {{ v.title }} — <span class="muted">{{ v.status }}</span>
+{% if v.file_path %}<br><video controls src="/video-file/{{ v.id }}"></video>{% endif %}</div>
+{% endfor %}
+<script>
+function buildVideo(){
+  document.getElementById('msg').textContent='queued…';
+  fetch('/api/build-video',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({phone_id:{{ phone.id }},style:'spec_showcase'})})
+  .then(r=>r.json()).then(d=>{document.getElementById('msg').textContent='video build queued ✓';});
+}
+</script>
+{% endblock %}
