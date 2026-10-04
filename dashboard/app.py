@@ -94,6 +94,9 @@ def series_view(series_id):
     for r in rows:
         p = _phone_dict(r)
         p["key"] = _key_specs(p)
+        p["all_images"] = [ir["local_path"] for ir in con.execute(
+            "SELECT local_path FROM phone_images WHERE phone_id=? AND local_path IS NOT NULL "
+            "ORDER BY position", (p["id"],)).fetchall()]
         phones.append(p)
     videos = con.execute(
         "SELECT * FROM videos WHERE series_id=? ORDER BY id DESC", (series_id,)).fetchall()
@@ -117,6 +120,17 @@ def phone_img(phone_id):
     p = con.execute("SELECT local_image FROM phones WHERE id=?", (phone_id,)).fetchone()
     if p and p["local_image"] and os.path.exists(p["local_image"]):
         return send_file(p["local_image"])
+    return ("not found", 404)
+
+
+@app.route("/img/<int:phone_id>/<int:pos>")
+def phone_img_pos(phone_id, pos):
+    con = db.connect()
+    r = con.execute(
+        "SELECT local_path FROM phone_images WHERE phone_id=? AND position=?",
+        (phone_id, pos)).fetchone()
+    if r and r["local_path"] and os.path.exists(r["local_path"]):
+        return send_file(r["local_path"])
     return ("not found", 404)
 
 
@@ -199,18 +213,30 @@ def api_build_series_video():
 
 @app.route("/api/build-selected-video", methods=["POST"])
 def api_build_selected_video():
+    import json as _j
     body = request.get_json(force=True)
-    ids = [str(int(i)) for i in body.get("phone_ids", [])]
     style = body.get("style", "spec_showcase")
     quality = body.get("quality", "1080p")
-    if not ids:
-        return jsonify({"ok": False, "error": "no phones selected"}), 400
-    _launch([os.path.join(ROOT, "video", "run_builder.py"),
-             "--phone-ids", ",".join(ids), "--style", style, "--quality", quality])
+    if body.get("selections"):
+        sel = body["selections"]
+        if not sel:
+            return jsonify({"ok": False, "error": "no images selected"}), 400
+        _launch([os.path.join(ROOT, "video", "run_builder.py"),
+                 "--selections", _j.dumps(sel), "--style", style,
+                 "--quality", quality])
+        n = len(sel)
+    else:
+        ids = [str(int(i)) for i in body.get("phone_ids", [])]
+        if not ids:
+            return jsonify({"ok": False, "error": "no phones selected"}), 400
+        _launch([os.path.join(ROOT, "video", "run_builder.py"),
+                 "--phone-ids", ",".join(ids), "--style", style,
+                 "--quality", quality])
+        n = len(ids)
     con = db.connect()
     con.execute(
         "INSERT INTO videos (title, status, style, created_at) VALUES (?, 'queued', ?, ?)",
-        (f"selection ({len(ids)} phones)", style, db.now()))
+        (f"selection ({n} phones)", style, db.now()))
     con.commit()
     return jsonify({"ok": True})
 
@@ -237,6 +263,61 @@ def api_scrape_images():
 def api_templates():
     from video.style_spec import TEMPLATE_CHOICES
     return jsonify([{"id": t[0], "name": t[1]} for t in TEMPLATE_CHOICES])
+
+
+EDIT_FIELDS = ["title", "released", "year", "hz", "android", "chipset",
+               "display_inches", "display_panel", "camera_rear", "camera_front",
+               "storage", "ram", "battery", "weight"]
+
+
+@app.route("/api/phone/<int:phone_id>/edit-data")
+def api_phone_edit_data(phone_id):
+    from video.spec_fields import card_data
+    con = db.connect()
+    phone = db.get_phone(con, phone_id)
+    if not phone:
+        return jsonify({"ok": False}), 404
+    data = card_data(phone)
+    ov = phone.get("spec_overrides") or {}
+    return jsonify({
+        "ok": True, "id": phone_id, "name": phone["name"],
+        "announced": phone.get("announced") or "",
+        "fields": {k: ov.get(k) or "" for k in EDIT_FIELDS},
+        "current": {
+            "title": data["title"], "released": data["released"], "year": data["year"],
+            "hz": data["badges"][0], "android": data["badges"][1],
+            "chipset": data["badges"][2],
+            "display_inches": data["rows"][0][2], "display_panel": data["rows"][0][3],
+            "camera_rear": data["rows"][1][2], "camera_front": data["rows"][1][3],
+            "storage": data["rows"][2][2], "ram": data["rows"][3][2],
+            "battery": data["rows"][4][2], "weight": data["rows"][5][2],
+        },
+    })
+
+
+@app.route("/api/phone/<int:phone_id>/edit", methods=["POST"])
+def api_phone_edit(phone_id):
+    import json as _j
+    body = request.get_json(force=True)
+    con = db.connect()
+    if body.get("name"):
+        con.execute("UPDATE phones SET name=? WHERE id=?", (body["name"], phone_id))
+    if "announced" in body:
+        con.execute("UPDATE phones SET announced=? WHERE id=?",
+                    (body["announced"], phone_id))
+    ov = {k: (body.get("fields") or {}).get(k, "") for k in EDIT_FIELDS}
+    ov = {k: v for k, v in ov.items() if v}
+    con.execute("UPDATE phones SET spec_overrides=? WHERE id=?",
+                (_j.dumps(ov, ensure_ascii=False), phone_id))
+    con.commit()
+    # drop cached preview frames so the edit shows immediately
+    import glob as _g
+    for f in _g.glob(os.path.join(FRAMES, f"preview_{phone_id}_*")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    return jsonify({"ok": True})
 
 
 @app.route("/api/delete-videos", methods=["POST"])

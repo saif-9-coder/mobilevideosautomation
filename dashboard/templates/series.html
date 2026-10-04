@@ -11,12 +11,11 @@
       <option value="1440p">1440p 2K</option>
     </select>
     <button class="btn" onclick="buildSeries({{ series.id }},this)">🎬 Full Series Video</button>
-    <button class="btn" onclick="buildSelected(this)">🎬 Selected Phones Video</button>
+    <button class="btn" onclick="buildSelected(this)">🎬 Selected Video</button>
     <button class="btn ghost" onclick="scrapeSpecs({{ series.id }},this)">⬇ Scrape Specs</button>
     <button class="btn ghost" onclick="scrapeImages({{ series.id }},this)">🖼 Scrape Images</button>
-    <label class="muted"><input type="checkbox" id="selall" onclick="document.querySelectorAll('.pc').forEach(c=>c.checked=this.checked)"> select all</label>
   </div>
-  <div class="muted" style="margin-top:8px">Template select karo — video usi style mein banegi. Phones select karke "Selected Phones Video" dabao.</div>
+  <div class="muted" style="margin-top:8px">Har image par tick karo — video sirf selected images/phones se banegi. ✏️ se phone ka data edit kar sakte ho.</div>
 </div>
 
 {% if videos %}
@@ -32,17 +31,30 @@
 {% endif %}
 
 <h2>Phones ({{ phones|length }})</h2>
-<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
+<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
 {% for p in phones %}
-<div class="card pcard">
+<div class="card pcard" data-pid="{{ p.id }}">
   <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
-    <input type="checkbox" class="pc" value="{{ p.id }}">
+    <input type="checkbox" class="pc" value="{{ p.id }}" onchange="togglePhoneImgs({{ p.id }},this.checked)">
     <b>{{ p.name }}</b>
   </label>
-  {% if p.local_image %}<img class="phone tall" loading="lazy" src="/img/{{ p.id }}">{% endif %}
+  {% if p.all_images %}
+  <div class="thumbs" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+    {% for im in p.all_images %}
+    <label style="position:relative;cursor:pointer">
+      <input type="checkbox" class="ic" data-pid="{{ p.id }}" data-pos="{{ loop.index0 }}"
+             style="position:absolute;top:4px;left:4px;z-index:2;width:18px;height:18px" onchange="syncPhoneBox({{ p.id }})">
+      <img loading="lazy" src="/img/{{ p.id }}/{{ loop.index0 }}"
+           style="width:72px;height:72px;object-fit:cover;border-radius:8px;border:2px solid #3a4356">
+    </label>
+    {% endfor %}
+  </div>
+  {% elif p.local_image %}
+  <img class="phone tall" loading="lazy" src="/img/{{ p.id }}">
+  {% endif %}
   <div class="muted">{{ p.announced or '' }}
     {% if p.specs %}· <span style="color:#5fd97a">specs ✓</span>{% else %}· <span style="color:#e0a13e">no specs</span>{% endif %}
-    {% if p.local_image %}· <span style="color:#5fd97a">img ✓</span>{% else %}· <span style="color:#e0a13e">no img</span>{% endif %}
+    · {{ p.all_images|length or (1 if p.local_image else 0) }} img
   </div>
   {% if p.key.display %}<div class="spec"><b>Display:</b> {{ p.key.display }}</div>{% endif %}
   {% if p.key.chipset %}<div class="spec"><b>Chip:</b> {{ p.key.chipset }}</div>{% endif %}
@@ -51,11 +63,23 @@
   {% if p.key.camera %}<div class="spec"><b>Camera:</b> {{ p.key.camera }}</div>{% endif %}
   <div class="rowbtns">
     <button class="btn ghost" onclick="mOpen({{ p.id }})">👁 Preview</button>
+    <button class="btn ghost" onclick="openEdit({{ p.id }})">✏️ Edit</button>
     <button class="btn" onclick="buildPhone({{ p.id }},this)">🎬 Video</button>
   </div>
 </div>
 {% endfor %}
 </div>
+
+<!-- edit modal -->
+<div id="emodal" class="modal"><div class="mbox" style="max-width:640px">
+  <h3 style="margin-top:0">✏️ Edit phone data</h3>
+  <div id="efields" style="display:grid;grid-template-columns:1fr 1fr;gap:10px"></div>
+  <div class="rowbtns" style="margin-top:14px">
+    <button class="btn" onclick="saveEdit()">💾 Save</button>
+    <button class="btn ghost" onclick="document.getElementById('emodal').classList.remove('open')">Cancel</button>
+  </div>
+</div></div>
+
 <script>
 const tplSel=document.getElementById('tpl');
 fetch('/api/templates').then(r=>r.json()).then(ts=>{
@@ -63,32 +87,87 @@ fetch('/api/templates').then(r=>r.json()).then(ts=>{
 });
 function curTpl(){return tplSel.value||'spec_showcase';}
 function curQty(){return document.getElementById('qty').value||'1080p';}
-// preview uses selected template
 const _mOpen=mOpen;
 mOpen=function(pid){mSlides=['/slide/'+pid+'/0?theme='+curTpl(),'/slide/'+pid+'/1?theme='+curTpl()];mShow(0);
   document.getElementById('modal').classList.add('open');
   clearInterval(mTimer);mTimer=setInterval(()=>mShow(mIdx+1),2500);};
+
+// image-level selection
+function togglePhoneImgs(pid,on){
+  document.querySelectorAll('.ic[data-pid="'+pid+'"]').forEach(c=>c.checked=on);
+}
+function syncPhoneBox(pid){
+  const boxes=[...document.querySelectorAll('.ic[data-pid="'+pid+'"]')];
+  const anyOn=boxes.some(c=>c.checked);
+  const pc=document.querySelector('.pc[value="'+pid+'"]');
+  if(pc)pc.checked=anyOn;
+}
 function buildSelected(btn){
-  const ids=[...document.querySelectorAll('.pc:checked')].map(c=>c.value);
-  if(!ids.length){toast('Pehle kuch phones select karo ✓');return;}
+  const sel={};
+  document.querySelectorAll('.ic:checked').forEach(c=>{
+    const pid=c.dataset.pid,pos=parseInt(c.dataset.pos);
+    (sel[pid]=sel[pid]||[]).push(pos);
+  });
+  // phones with old single image and phone-box checked
+  document.querySelectorAll('.pc:checked').forEach(c=>{
+    const pid=c.value;
+    if(!sel[pid])sel[pid]=[0];
+  });
+  if(!Object.keys(sel).length){toast('Pehle kuch images select karo ✓');return;}
   btn.disabled=true;btn.textContent='⏳ Queued…';
   fetch('/api/build-selected-video',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({phone_ids:ids,style:curTpl(),quality:curQty()})})
-  .then(r=>r.json()).then(d=>{toast(d.ok?'Selected video queued ✓':(d.error||'error'));btn.disabled=false;btn.textContent='🎬 Selected Phones Video';});
+    body:JSON.stringify({selections:sel,style:curTpl(),quality:curQty()})})
+  .then(r=>r.json()).then(d=>{toast(d.ok?'Selected video queued ✓':(d.error||'error'));btn.disabled=false;btn.textContent='🎬 Selected Video';});
 }
 function scrapeSpecs(sid,btn){btn.disabled=true;btn.textContent='⏳ Scraping…';
   fetch('/api/scrape-specs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series_id:sid})})
-  .then(r=>r.json()).then(()=>{toast('Specs scraping started ✓ (page refresh karo thodi der baad)');btn.disabled=false;btn.textContent='⬇ Scrape Specs';});}
+  .then(r=>r.json()).then(()=>{toast('Specs scraping started ✓');btn.disabled=false;btn.textContent='⬇ Scrape Specs';});}
 function scrapeImages(sid,btn){btn.disabled=true;btn.textContent='⏳ Scraping…';
   fetch('/api/scrape-images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series_id:sid})})
-  .then(r=>r.json()).then(()=>{toast('Images downloading ✓ (page refresh karo thodi der baad)');btn.disabled=false;btn.textContent='🖼 Scrape Images';});}
-// pass template into single-video builds too
-const _buildPhone=buildPhone, _buildSeries=buildSeries;
+  .then(r=>r.json()).then(()=>{toast('Images downloading ✓');btn.disabled=false;btn.textContent='🖼 Scrape Images';});}
+const _buildPhone=buildPhone,_buildSeries=buildSeries;
 buildPhone=function(pid,btn){btn.disabled=true;btn.textContent='⏳ Queued…';
   fetch('/api/build-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_id:pid,style:curTpl(),quality:curQty()})})
   .then(r=>r.json()).then(()=>{toast('Video build queued ✓');btn.textContent='✓ Queued';});};
 buildSeries=function(sid,btn){btn.disabled=true;btn.textContent='⏳ Queued…';
   fetch('/api/build-series-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series_id:sid,style:curTpl(),quality:curQty()})})
   .then(r=>r.json()).then(()=>{toast('Full series video queued ✓');btn.textContent='✓ Queued';});};
+
+// edit modal
+let editPid=null;
+const FIELD_LABELS={title:'Name',released:'Released (e.g. Released 2024, Jan)',year:'Year',hz:'Refresh rate (120Hz)',
+android:'Android (Android 14)',chipset:'Chipset',display_inches:'Display size (6.8")',display_panel:'Display type',
+camera_rear:'Rear camera (200/10/50/12 MP)',camera_front:'Front camera (FRONT 12 MP)',storage:'Storage (256/512 GB)',
+ram:'RAM (12 GB)',battery:'Battery (5.000 mAh)',weight:'Weight (232 g)'};
+function openEdit(pid){
+  fetch('/api/phone/'+pid+'/edit-data').then(r=>r.json()).then(d=>{
+    if(!d.ok){toast('error');return;}
+    editPid=pid;
+    const box=document.getElementById('efields');box.innerHTML='';
+    const mk=(key,label,val,ph)=>`<label class="muted" style="display:block">${label}<br>
+      <input data-k="${key}" value="${(val||'').replace(/"/g,'&quot;')}" placeholder="${ph||''}"
+      style="width:100%;padding:8px;border-radius:8px;border:1px solid #3a4356;background:#1a2233;color:#e8ecf4"></label>`;
+    box.innerHTML+=mk('__name','Phone name',d.name,'');
+    box.innerHTML+=mk('__announced','Announced',d.announced,'');
+    Object.keys(FIELD_LABELS).forEach(k=>{
+      box.innerHTML+=mk(k,FIELD_LABELS[k],d.fields[k],d.current[k]||'');
+    });
+    document.getElementById('emodal').classList.add('open');
+  });
+}
+function saveEdit(){
+  const inputs=[...document.querySelectorAll('#efields input')];
+  const fields={};let name='',announced='';
+  inputs.forEach(i=>{
+    const k=i.dataset.k,v=i.value.trim();
+    if(k==='__name')name=v;else if(k==='__announced')announced=v;else if(v)fields[k]=v;
+  });
+  fetch('/api/phone/'+editPid+'/edit',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name,announced,fields})})
+  .then(r=>r.json()).then(d=>{
+    document.getElementById('emodal').classList.remove('open');
+    toast(d.ok?'Saved ✓ — page refresh karo':'error');
+  });
+}
 </script>
 {% endblock %}

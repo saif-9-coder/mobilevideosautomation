@@ -21,6 +21,8 @@ def main():
     ap.add_argument("--phone-id", type=int)
     ap.add_argument("--phone-ids", default="",
                     help="comma-separated phone ids -> one video from exactly these phones")
+    ap.add_argument("--selections", default="",
+                    help='JSON like {"90":[0,2],"91":[0]} -> per-phone image positions to use')
     ap.add_argument("--series-id", type=int)
     ap.add_argument("--style", default="spec_showcase")
     ap.add_argument("--template", default=None,
@@ -43,6 +45,10 @@ def main():
         for r in rows:
             d = dict(r)
             d["specs"] = _j.loads(d["specs_json"] or "{}")
+            try:
+                d["spec_overrides"] = _j.loads(d.get("spec_overrides") or "{}")
+            except Exception:
+                d["spec_overrides"] = {}
             d["images"] = [ir["local_path"] for ir in con.execute(
                 "SELECT local_path FROM phone_images WHERE phone_id=? AND local_path IS NOT NULL "
                 "ORDER BY position", (d["id"],)).fetchall()]
@@ -50,6 +56,36 @@ def main():
         return phones
 
     con = db.connect()
+    if a.selections:
+        sel = _j.loads(a.selections)  # {phone_id: [positions]}
+        ids = [int(x) for x in sel.keys()]
+        rows = con.execute(
+            "SELECT p.*, b.name AS brand_name, s.name AS series_name FROM phones p "
+            "JOIN brands b ON p.brand_id=b.id JOIN series s ON p.series_id=s.id "
+            f"WHERE p.id IN ({','.join('?' * len(ids))})", ids).fetchall()
+        phones = _rows_to_phones(rows)
+        if not phones:
+            print("no phones found"); return
+        for ph in phones:
+            want = sel.get(str(ph["id"]), sel.get(ph["id"], []))
+            all_imgs = [ir["local_path"] for ir in con.execute(
+                "SELECT local_path, position FROM phone_images WHERE phone_id=? AND local_path IS NOT NULL "
+                "ORDER BY position", (ph["id"],)).fetchall()]
+            picked = [all_imgs[i] for i in want if isinstance(i, int) and i < len(all_imgs)]
+            ph["images"] = picked or all_imgs[:1]
+        out = build_series_video(phones, phones[0]["brand_name"],
+                                 f"{phones[0]['series_name']} Selection",
+                                 style=a.style, secs_per_phone=a.secs,
+                                 music=a.music, quality=a.quality)
+        con.execute(
+            "INSERT INTO videos (title, file_path, status, style, created_at)"
+            " VALUES (?, ?, 'ready', ?, ?)",
+            (f"{phones[0]['brand_name']} selection ({len(phones)} phones)", out,
+             a.style, db.now()))
+        con.commit()
+        print("built:", out)
+        return
+
     if a.phone_ids:
         ids = [int(x) for x in a.phone_ids.split(",") if x.strip().isdigit()]
         rows = con.execute(

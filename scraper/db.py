@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS phones (
     announced TEXT,
     status TEXT,
     specs_json TEXT,
+    spec_overrides TEXT DEFAULT '{}',
     scraped_at TEXT
 );
 CREATE TABLE IF NOT EXISTS videos (
@@ -71,9 +72,15 @@ CREATE INDEX IF NOT EXISTS idx_phones_series ON phones(series_id);
 
 def connect(db_path=DB_PATH):
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, timeout=60)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    # lightweight migrations for DBs created before these columns existed
+    try:
+        con.execute("ALTER TABLE phones ADD COLUMN spec_overrides TEXT DEFAULT '{}'")
+        con.commit()
+    except Exception:
+        pass
     return con
 
 
@@ -145,7 +152,10 @@ def upsert_phone(con, brand_id, series_id, name, gsmarena_url=None, image_url=No
            ON CONFLICT(gsmarena_url) DO UPDATE SET
              series_id=excluded.series_id, name=excluded.name, image_url=excluded.image_url,
              announced=excluded.announced, status=excluded.status,
-             specs_json=excluded.specs_json, scraped_at=excluded.scraped_at""",
+             specs_json=CASE WHEN excluded.specs_json='{}' THEN phones.specs_json
+                             ELSE excluded.specs_json END,
+             scraped_at=CASE WHEN excluded.specs_json='{}' THEN phones.scraped_at
+                             ELSE excluded.scraped_at END""",
         (series_id, brand_id, name, gsmarena_url, image_url, announced, status,
          json.dumps(specs or {}, ensure_ascii=False), now()),
     )
@@ -158,6 +168,10 @@ def get_phone(con, phone_id):
         return None
     d = dict(row)
     d["specs"] = json.loads(d["specs_json"] or "{}")
+    try:
+        d["spec_overrides"] = json.loads(d.get("spec_overrides") or "{}")
+    except Exception:
+        d["spec_overrides"] = {}
     d["images"] = [r["local_path"] for r in con.execute(
         "SELECT local_path FROM phone_images WHERE phone_id=? AND local_path IS NOT NULL "
         "ORDER BY position", (phone_id,)).fetchall()]

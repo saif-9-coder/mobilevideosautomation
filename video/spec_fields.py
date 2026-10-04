@@ -96,23 +96,34 @@ def released(specs):
 
 
 def card_data(phone):
-    """phone: dict from db.get_phone. Returns everything the card renderer needs."""
+    """phone: dict from db.get_phone. Returns everything the card renderer needs.
+
+    phone['spec_overrides'] (dict) wins over scraped specs. Keys:
+    title, released, year, hz, android, chipset,
+    display_inches, display_panel, camera_rear, camera_front,
+    storage, ram, battery, weight.
+    """
     specs = phone.get("specs", {})
+    ov = phone.get("spec_overrides") or {}
     inches, panel, hz = display(specs)
     rear, front = camera(specs)
     storage, ram = storage_ram(specs)
     rel, year = released(specs)
     return {
-        "title": phone["name"],
-        "released": rel,
-        "year": year,
-        "badges": [hz, android_version(specs), chipset_short(specs)],
+        "title": ov.get("title") or phone["name"],
+        "released": ov.get("released") or rel,
+        "year": ov.get("year") or year,
+        "badges": [ov.get("hz") or hz,
+                   ov.get("android") or android_version(specs),
+                   ov.get("chipset") or chipset_short(specs)],
         "rows": [
-            ("display", "DISPLAY", inches, panel),
-            ("camera", "CAMERA", rear, front),
-            ("storage", "STORAGE", storage, ""),
-            ("ram", "RAM", ram, ""),
-            ("battery", "BATTERY", battery(specs), ""),
-            ("weight", "WEIGHT", weight(specs), ""),
+            ("display", "DISPLAY", ov.get("display_inches") or inches,
+             ov.get("display_panel") or panel),
+            ("camera", "CAMERA", ov.get("camera_rear") or rear,
+             ov.get("camera_front") or front),
+            ("storage", "STORAGE", ov.get("storage") or storage, ""),
+            ("ram", "RAM", ov.get("ram") or ram, ""),
+            ("battery", "BATTERY", ov.get("battery") or battery(specs), ""),
+            ("weight", "WEIGHT", ov.get("weight") or weight(specs), ""),
         ],
     }

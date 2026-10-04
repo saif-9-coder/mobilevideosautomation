@@ -71,7 +71,11 @@ def cmd_specs(con, brand=None, all_brands=False, phone_id=None, series_id=None,
             import json as _j
             rows = [r for r in rows if not _j.loads(r["specs_json"] or "{}")]
     elif all_brands:
-        rows = con.execute("SELECT id, gsmarena_url FROM phones").fetchall()
+        rows = con.execute(
+            "SELECT id, gsmarena_url, specs_json FROM phones").fetchall()
+        if missing_only:
+            import json as _j
+            rows = [r for r in rows if not _j.loads(r["specs_json"] or "{}")]
     else:
         rows = con.execute(
             "SELECT p.id, p.gsmarena_url FROM phones p JOIN brands b ON p.brand_id=b.id "
@@ -79,7 +83,8 @@ def cmd_specs(con, brand=None, all_brands=False, phone_id=None, series_id=None,
         ).fetchall()
     for i, r in enumerate(rows):
         data = gsmarena.scrape_phone_specs(r["gsmarena_url"])
-        if data:
+        # never overwrite good specs with an empty/failed scrape
+        if data and data.get("specs"):
             specs = data.get("specs", {})
             announced = specs.get("Launch", {}).get("Announced", "")
             status = specs.get("Launch", {}).get("Status", "")

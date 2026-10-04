@@ -28,12 +28,16 @@ python scraper/run_scraper.py phones --all
 python scraper/run_scraper.py specs --brand Samsung
 python scraper/run_scraper.py specs --all
 
-# 4. Download phone images
+# 4. Download HQ phone images (pictures page, all angles)
 python scraper/run_scraper.py images --brand Samsung
+
+# 4b. Full scrape: all brands (phone lists -> specs -> HQ images), background-safe
+./scraper/scrape_all.sh   # progress in data/scrape_all.log
 
 # 5. Build a video
 python video/run_builder.py --phone-id 123 --style spec_showcase
-python video/run_builder.py --series-id 5 --style spec_showcase
+python video/run_builder.py --series-id 5 --style spec_showcase --quality 1440p
+python video/run_builder.py --selections '{"90":[0,2],"91":[1]}' --style dark_pro
 
 # 6. Dashboard (http://127.0.0.1:5000)
 python dashboard/app.py
@@ -54,7 +58,19 @@ The exact commands to run are also in `scraper/run_scraper.py --help` header.
 
 ## Database
 
-SQLite at `data/mva.db` (override with `MVA_DB` env var). Tables: `brands`, `series`, `phones`, `videos`.
+SQLite at `data/mva.db` (override with `MVA_DB` env var). Tables: `brands`, `series`,
+`phones` (incl. `spec_overrides` JSON for manual edits), `phone_images` (HQ pictures-page
+images, all angles), `videos`.
+
+## Dashboard features
+
+- Series page: phone cards show **all HQ images as thumbnails** — tick individual images
+  (or the phone checkbox) then **Selected Video** builds from exactly those.
+- **✏️ Edit** on every phone: name, announced date and every spec field; edits apply
+  to cards/videos immediately.
+- **Template** selector (Spec Showcase / Dark Pro / Cream Minimal) + **Quality**
+  selector (1080p HD / 1440p 2K).
+- **⬇ Scrape Specs** / **🖼 Scrape Images** buttons per series fill in missing data.
 
 ## Notes
 
