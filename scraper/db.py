@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS videos (
     status TEXT DEFAULT 'pending',
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS phone_images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_id INTEGER NOT NULL REFERENCES phones(id),
+    url TEXT,
+    local_path TEXT,
+    position INTEGER DEFAULT 0,
+    UNIQUE (phone_id, url)
+);
+CREATE INDEX IF NOT EXISTS idx_phone_images ON phone_images(phone_id);
 CREATE INDEX IF NOT EXISTS idx_phones_brand ON phones(brand_id);
 CREATE INDEX IF NOT EXISTS idx_phones_series ON phones(series_id);
 """
@@ -149,4 +158,16 @@ def get_phone(con, phone_id):
         return None
     d = dict(row)
     d["specs"] = json.loads(d["specs_json"] or "{}")
+    d["images"] = [r["local_path"] for r in con.execute(
+        "SELECT local_path FROM phone_images WHERE phone_id=? AND local_path IS NOT NULL "
+        "ORDER BY position", (phone_id,)).fetchall()]
     return d
+
+
+def add_phone_image(con, phone_id, url, local_path, position=0):
+    con.execute(
+        "INSERT INTO phone_images (phone_id, url, local_path, position) VALUES (?,?,?,?) "
+        "ON CONFLICT(phone_id, url) DO UPDATE SET local_path=excluded.local_path, "
+        "position=excluded.position",
+        (phone_id, url, local_path, position))
+    con.commit()

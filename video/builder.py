@@ -6,12 +6,14 @@ import os
 import subprocess
 
 from .spec_fields import card_data
-from .style_spec import render_card, render_intro, W, H
+from .style_spec import render_card, render_intro, set_quality
+import video.style_spec as _style
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "output")
 WORK_DIR = os.path.join(ROOT, "data", "frames")
 FPS = 30
+QUALITIES = {"1080p": (1920, 1080), "1440p": (2560, 1440)}
 
 
 def _run(cmd):
@@ -76,32 +78,45 @@ def remove_white_bg(src_path, dst_path, thresh=235):
 
 def prepare_image(phone):
     """Return path to a background-removed PNG of the phone (or original)."""
+    imgs = prepare_images(phone)
+    return imgs[0] if imgs else None
+
+
+def prepare_images(phone, max_n=3):
+    """Return list of background-removed PNG paths (all angles)."""
     os.makedirs(WORK_DIR, exist_ok=True)
-    dst = os.path.join(WORK_DIR, f"phone_{phone['id']}_cut.png")
-    if os.path.exists(dst):
-        return dst
-    src = phone.get("local_image")
-    if not src or not os.path.exists(src):
-        return None
-    # Prefer rembg if its model is already cached (no download at runtime);
-    # otherwise use the fast white-background remover (GSMArena shots are on white).
-    model_cached = os.path.exists(os.path.expanduser("~/.u2net/u2net.onnx"))
-    if model_cached:
-        try:
-            from rembg import remove
-            from PIL import Image
-            remove(Image.open(src).convert("RGBA")).save(dst)
-            return dst
-        except Exception:
-            pass
-    try:
-        return remove_white_bg(src, dst)
-    except Exception:
-        return src
+    srcs = phone.get("images") or ([phone.get("local_image")] if phone.get("local_image") else [])
+    out_paths = []
+    for pos, src in enumerate(srcs[:max_n]):
+        if not src or not os.path.exists(src):
+            continue
+        dst = os.path.join(WORK_DIR, f"phone_{phone['id']}_{pos}_cut.png")
+        if not os.path.exists(dst):
+            model_cached = os.path.exists(os.path.expanduser("~/.u2net/u2net.onnx"))
+            done = False
+            if model_cached:
+                try:
+                    from rembg import remove
+                    from PIL import Image
+                    remove(Image.open(src).convert("RGBA")).save(dst)
+                    done = True
+                except Exception:
+                    pass
+            if not done:
+                try:
+                    remove_white_bg(src, dst)
+                    done = True
+                except Exception:
+                    pass
+            if not done:
+                dst = src
+        out_paths.append(dst)
+    return out_paths
 
 
-def _segments_to_mp4(segments, tag):
+def _segments_to_mp4(segments, tag, quality="1080p"):
     """segments: [(png, dur)] -> [(mp4, dur)]"""
+    W, H = QUALITIES.get(quality, QUALITIES["1080p"])
     seg_files = []
     for i, (png, dur) in enumerate(segments):
         out = os.path.join(WORK_DIR, f"{tag}_{i}.mp4")
@@ -143,48 +158,52 @@ def _safe(name):
 
 
 def build_phone_video(phone, style="spec_showcase", secs_per_phone=10,
-                      intro=True, music=None):
+                      intro=True, music=None, quality="1080p"):
     """Build the video for one phone dict (from db.get_phone). Returns output path."""
+    set_quality(quality)
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(WORK_DIR, exist_ok=True)
 
     data = card_data(phone)
-    img_path = prepare_image(phone)
-    card_png = os.path.join(WORK_DIR, f"card_{phone['id']}_{style}.png")
-    render_card(data, img_path, card_png, theme=style)
+    imgs = prepare_images(phone)
+    card_png = os.path.join(WORK_DIR, f"card_{phone['id']}_{style}_{quality}.png")
+    render_card(data, imgs, card_png, theme=style)
 
     segments = []
     if intro:
-        intro_png = os.path.join(WORK_DIR, f"intro_{phone['id']}_{style}.png")
+        intro_png = os.path.join(WORK_DIR, f"intro_{phone['id']}_{style}_{quality}.png")
         render_intro(phone["name"].split()[0], data["title"], intro_png,
-                     [img_path] if img_path else None, theme=style)
+                     imgs[:1], theme=style)
         segments.append((intro_png, 5))
     segments.append((card_png, secs_per_phone))
 
-    seg_files = _segments_to_mp4(segments, f"seg_{phone['id']}")
-    final = os.path.join(OUT_DIR, f"{_safe(phone['name'])}_{style}.mp4")
+    seg_files = _segments_to_mp4(segments, f"seg_{phone['id']}", quality)
+    final = os.path.join(OUT_DIR, f"{_safe(phone['name'])}_{style}_{quality}.mp4")
     return _xfade_concat(seg_files, final, music=music)
 
 
 def build_series_video(phones, brand, series, style="spec_showcase",
-                       secs_per_phone=10, music=None, title="EVOLUTION"):
+                       secs_per_phone=10, music=None, title="EVOLUTION",
+                       quality="1080p"):
     """One video covering a whole series (phones in chronological order)."""
+    set_quality(quality)
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(WORK_DIR, exist_ok=True)
 
     segments = []
-    intro_png = os.path.join(WORK_DIR, f"intro_series_{phones[0]['series_id']}_{style}.png")
-    imgs = [prepare_image(p) for p in phones[:6]]
-    render_intro(brand, f"{series} {title}", intro_png, [i for i in imgs if i],
-                 theme=style)
+    intro_png = os.path.join(WORK_DIR, f"intro_series_{phones[0]['series_id']}_{style}_{quality}.png")
+    first_imgs = []
+    for p in phones[:6]:
+        first_imgs += prepare_images(p)[:1]
+    render_intro(brand, f"{series} {title}", intro_png, first_imgs, theme=style)
     segments.append((intro_png, 5))
 
     for ph in phones:
         data = card_data(ph)
-        png = os.path.join(WORK_DIR, f"card_{ph['id']}_{style}.png")
-        render_card(data, prepare_image(ph), png, theme=style)
+        png = os.path.join(WORK_DIR, f"card_{ph['id']}_{style}_{quality}.png")
+        render_card(data, prepare_images(ph), png, theme=style)
         segments.append((png, secs_per_phone))
 
-    seg_files = _segments_to_mp4(segments, "sseg")
-    final = os.path.join(OUT_DIR, f"{_safe(brand + '_' + series)}_{style}.mp4")
+    seg_files = _segments_to_mp4(segments, f"sseg_{style}_{quality}", quality)
+    final = os.path.join(OUT_DIR, f"{_safe(brand + '_' + series)}_{style}_{quality}.mp4")
     return _xfade_concat(seg_files, final, music=music)

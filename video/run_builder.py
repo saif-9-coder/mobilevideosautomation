@@ -28,6 +28,7 @@ def main():
     ap.add_argument("--secs", type=int, default=10)
     ap.add_argument("--music", default=None)
     ap.add_argument("--no-intro", action="store_true")
+    ap.add_argument("--quality", default="1080p", choices=["1080p", "1440p"])
     ap.add_argument("--limit", type=int, default=0,
                     help="only first N phones (for testing)")
     a = ap.parse_args()
@@ -42,6 +43,9 @@ def main():
         for r in rows:
             d = dict(r)
             d["specs"] = _j.loads(d["specs_json"] or "{}")
+            d["images"] = [ir["local_path"] for ir in con.execute(
+                "SELECT local_path FROM phone_images WHERE phone_id=? AND local_path IS NOT NULL "
+                "ORDER BY position", (d["id"],)).fetchall()]
             phones.append(d)
         return phones
 
@@ -57,7 +61,7 @@ def main():
             print("no phones found"); return
         out = build_series_video(phones, phones[0]["brand_name"],
                                  f"{phones[0]['series_name']} Selection",
-                                 style=a.style, secs_per_phone=a.secs, music=a.music)
+                                 style=a.style, secs_per_phone=a.secs, music=a.music, quality=a.quality)
         con.execute(
             "INSERT INTO videos (title, file_path, status, style, created_at)"
             " VALUES (?, ?, 'ready', ?, ?)",
@@ -70,7 +74,7 @@ def main():
     if a.phone_id:
         phone = db.get_phone(con, a.phone_id)
         out = build_phone_video(phone, style=a.style, secs_per_phone=a.secs,
-                                intro=not a.no_intro, music=a.music)
+                                intro=not a.no_intro, music=a.music, quality=a.quality)
         con.execute(
             "INSERT INTO videos (phone_id, series_id, title, file_path, status, style, created_at)"
             " VALUES (?,?,?,?, 'ready', ?, ?)",
@@ -96,7 +100,7 @@ def main():
             return (int(m.group(1)) if m else 9999, p["name"])
         phones.sort(key=_yr)
         out = build_series_video(phones, rows[0]["brand_name"], rows[0]["series_name"],
-                                 style=a.style, secs_per_phone=a.secs, music=a.music)
+                                 style=a.style, secs_per_phone=a.secs, music=a.music, quality=a.quality)
         con.execute(
             "INSERT INTO videos (series_id, title, file_path, status, style, created_at)"
             " VALUES (?,?,?, 'ready', ?, ?)",

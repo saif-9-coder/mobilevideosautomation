@@ -165,8 +165,9 @@ def _launch(args):
 def api_build_video():
     body = request.get_json(force=True)
     phone_id, style = body.get("phone_id"), body.get("style", "spec_showcase")
+    quality = body.get("quality", "1080p")
     _launch([os.path.join(ROOT, "video", "run_builder.py"),
-             "--phone-id", str(phone_id), "--style", style])
+             "--phone-id", str(phone_id), "--style", style, "--quality", quality])
     con = db.connect()
     con.execute(
         "INSERT INTO videos (phone_id, title, status, style, created_at) "
@@ -180,8 +181,9 @@ def api_build_video():
 def api_build_series_video():
     body = request.get_json(force=True)
     series_id, style = body.get("series_id"), body.get("style", "spec_showcase")
+    quality = body.get("quality", "1080p")
     _launch([os.path.join(ROOT, "video", "run_builder.py"),
-             "--series-id", str(series_id), "--style", style])
+             "--series-id", str(series_id), "--style", style, "--quality", quality])
     con = db.connect()
     s = con.execute(
         "SELECT s.name, b.name AS bn FROM series s JOIN brands b ON s.brand_id=b.id "
@@ -200,10 +202,11 @@ def api_build_selected_video():
     body = request.get_json(force=True)
     ids = [str(int(i)) for i in body.get("phone_ids", [])]
     style = body.get("style", "spec_showcase")
+    quality = body.get("quality", "1080p")
     if not ids:
         return jsonify({"ok": False, "error": "no phones selected"}), 400
     _launch([os.path.join(ROOT, "video", "run_builder.py"),
-             "--phone-ids", ",".join(ids), "--style", style])
+             "--phone-ids", ",".join(ids), "--style", style, "--quality", quality])
     con = db.connect()
     con.execute(
         "INSERT INTO videos (title, status, style, created_at) VALUES (?, 'queued', ?, ?)",

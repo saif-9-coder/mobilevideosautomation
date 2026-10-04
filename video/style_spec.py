@@ -9,6 +9,15 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 W, H = 1920, 1080
 
+
+def set_quality(quality):
+    """'1080p' (1920x1080) or '1440p' (2560x1440). Must be called before rendering."""
+    global W, H
+    if quality == "1440p":
+        W, H = 2560, 1440
+    else:
+        W, H = 1920, 1080
+
 THEMES = {
     "spec_showcase": {  # Techvolution light style (default)
         "bg": (199, 208, 222), "grid": (178, 189, 208),
@@ -110,68 +119,83 @@ def drop_shadow(base, img, pos, blur=28, offset=(20, 26), opacity=110):
     return base
 
 
-def render_card(data, phone_img_path=None, out_path=None, theme="spec_showcase"):
+def render_card(data, phone_imgs=None, out_path=None, theme="spec_showcase"):
     """
     data: dict from spec_fields.card_data — title, released, year, badges, rows.
+    phone_imgs: single path (back-compat) or list of paths (all angles, overlapping).
     Returns PIL image (also saved to out_path if given).
     """
     t = _th(theme)
     BLACK, GRAY, ICON = t["text"], t["gray"], t["icon"]
+    u = W / 1920
+    S = lambda v: max(1, int(v * u))
     img = background(theme).convert("RGBA")
+    if (img.width, img.height) != (W, H):
+        img = img.resize((W, H), Image.LANCZOS)
     d = ImageDraw.Draw(img)
-    fb = lambda s: font(FONT_BOLD, s)
-    fr = lambda s: font(FONT_REG, s)
+    fb = lambda s: font(FONT_BOLD, S(s))
+    fr = lambda s: font(FONT_REG, S(s))
 
     # year marker (behind everything else)
     if data.get("year"):
-        yf = font(FONT_BOLD, 300)
+        yf = font(FONT_BOLD, S(300))
         tw = d.textlength(data["year"], font=yf)
-        timg = Image.new("RGBA", (int(tw) + 40, 360), (0, 0, 0, 0))
-        ImageDraw.Draw(timg).text((20, 0), data["year"], font=yf,
+        timg = Image.new("RGBA", (int(tw) + S(40), S(360)), (0, 0, 0, 0))
+        ImageDraw.Draw(timg).text((S(20), 0), data["year"], font=yf,
                                   fill=BLACK + (t["year_alpha"],))
-        img.alpha_composite(timg, (W - int(tw) - 420, H - 380))
+        img.alpha_composite(timg, (W - int(tw) - S(420), H - S(380)))
 
     # title + released (auto-fit title so it never hits the badges)
     tsize = 96
     while tsize > 48:
         tf = fb(tsize)
-        if d.textlength(data["title"], font=tf) < 950:
+        if d.textlength(data["title"], font=tf) < 950 * u:
             break
         tsize -= 6
-    d.text((90, 60), data["title"], font=fb(tsize), fill=BLACK)
+    d.text((S(90), S(60)), data["title"], font=fb(tsize), fill=BLACK)
     if data.get("released"):
-        d.text((94, 178), data["released"], font=fr(40), fill=GRAY)
+        d.text((S(94), S(178)), data["released"], font=fr(40), fill=GRAY)
 
     # top-right badges
-    bx = W - 90
+    bx = W - S(90)
     for badge in reversed([b for b in data.get("badges", []) if b]):
-        bw = d.textlength(badge, font=fb(30)) + 56
+        bw = d.textlength(badge, font=fb(30)) + S(56)
         bx -= bw
-        d.rounded_rectangle([bx, 84, bx + bw, 148], radius=32, outline=GRAY, width=3)
-        d.text((bx + 28, 96), badge, font=fb(30), fill=BLACK)
-        bx -= 24
+        d.rounded_rectangle([bx, S(84), bx + bw, S(148)], radius=S(32),
+                            outline=GRAY, width=S(3))
+        d.text((bx + S(28), S(96)), badge, font=fb(30), fill=BLACK)
+        bx -= S(24)
 
     # spec rows
-    y = 280
+    y = S(280)
     for kind, label, value, sub in data["rows"]:
         if not value and not sub:
             continue
-        draw_icon(d, kind, 90, y + 8, color=ICON)
-        d.text((185, y), label, font=fb(30), fill=GRAY)
+        draw_icon(d, kind, S(90), y + S(8), s=S(64), color=ICON, w=S(5))
+        d.text((S(185), y), label, font=fb(30), fill=GRAY)
         if value:
-            d.text((185, y + 38), value, font=fb(58), fill=BLACK)
+            d.text((S(185), y + S(38)), value, font=fb(58), fill=BLACK)
         if sub:
-            d.text((185, y + 104), sub, font=fb(34), fill=BLACK)
-        y += 140 if sub else 112
+            d.text((S(185), y + S(104)), sub, font=fb(34), fill=BLACK)
+        y += S(140) if sub else S(112)
 
-    # phone image, right side
-    if phone_img_path and os.path.exists(phone_img_path):
-        ph = Image.open(phone_img_path).convert("RGBA")
-        th = 780
+    # phone image, right side — single hero shot (front+back composite)
+    if isinstance(phone_imgs, str):
+        phone_imgs = [phone_imgs]
+    imgs = [pp for pp in (phone_imgs or []) if pp and os.path.exists(pp)]
+    if imgs:
+        ph = Image.open(imgs[0]).convert("RGBA")
+        th = S(800)
         tw = int(ph.width * th / ph.height)
+        # keep the image clear of the spec text (max width)
+        max_w = W - S(1050)
+        if tw > max_w:
+            tw = max_w
+            th = int(ph.height * tw / ph.width)
         ph = ph.resize((tw, th), Image.LANCZOS)
-        px, py = W - 90 - tw, (H - th) // 2 + 20
-        img = drop_shadow(img, ph, (px, py))
+        px, py = W - S(90) - tw, (H - th) // 2 + S(20)
+        img = drop_shadow(img, ph, (px, py), blur=S(28),
+                          offset=(S(20), S(26)), opacity=110)
         img.alpha_composite(ph, (px, py))
 
     out = img.convert("RGB")
@@ -184,21 +208,28 @@ def render_intro(brand, series, out_path, phone_imgs=None, theme="spec_showcase"
     """Thumbnail-style intro card: BRAND / SERIES / EVOLUTION."""
     t = _th(theme)
     BLACK, GRAY, ACCENT = t["text"], t["gray"], t["accent"]
+    u = W / 1920
+    S = lambda v: max(1, int(v * u))
     img = background(theme).convert("RGBA")
+    if (img.width, img.height) != (W, H):
+        img = img.resize((W, H), Image.LANCZOS)
     d = ImageDraw.Draw(img)
-    fb = lambda s: font(FONT_BOLD, s)
-    d.text((90, 200), brand.upper(), font=fb(120), fill=BLACK)
-    d.text((94, 350), f"{series.upper()} EVOLUTION", font=fb(90), fill=ACCENT)
-    d.text((96, 480), "Full specifications showcase", font=font(FONT_REG, 44), fill=GRAY)
+    fb = lambda s: font(FONT_BOLD, S(s))
+    d.text((S(90), S(200)), brand.upper(), font=fb(120), fill=BLACK)
+    d.text((S(94), S(350)), f"{series.upper()} EVOLUTION", font=fb(90), fill=ACCENT)
+    d.text((S(96), S(480)), "Full specifications showcase",
+           font=font(FONT_REG, S(44)), fill=GRAY)
     if phone_imgs:
-        x = 90
-        for p in phone_imgs[:8]:
-            if os.path.exists(p):
-                ph = Image.open(p).convert("RGBA")
-                th = 300
+        if isinstance(phone_imgs, str):
+            phone_imgs = [phone_imgs]
+        x = S(90)
+        for pp in phone_imgs[:8]:
+            if pp and os.path.exists(pp):
+                ph = Image.open(pp).convert("RGBA")
+                th = S(300)
                 tw = int(ph.width * th / ph.height)
-                img.alpha_composite(ph.resize((tw, th), Image.LANCZOS), (x, 700))
-                x += tw + 30
+                img.alpha_composite(ph.resize((tw, th), Image.LANCZOS), (x, S(700)))
+                x += tw + S(30)
     out = img.convert("RGB")
     out.save(out_path, quality=95)
     return out

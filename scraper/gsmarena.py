@@ -88,6 +88,16 @@ def scrape_phone_specs(phone_url):
     m = re.search(r'<div class="specs-photo-main">.*?<img[^>]*src=([^\s>]+)', html, re.S)
     data["image_url"] = m.group(1).strip('"') if m else ""
 
+    # pictures page (high-quality images, all angles)
+    m = re.search(r'<div class="specs-photo-main">\s*<a href=([^\s>]+)', html, re.S)
+    pics_href = m.group(1).strip('"').strip("'") if m else ""
+    data["pictures_url"] = urljoin(BASE, pics_href) if pics_href else ""
+    if not data["pictures_url"] and phone_url:
+        # derive: samsung_galaxy_s26_ultra_5g-14320.php -> ...-pictures-14320.php
+        mm = re.search(r"(.+)-(\d+)\.php", phone_url)
+        if mm:
+            data["pictures_url"] = f"{mm.group(1)}-pictures-{mm.group(2)}.php"
+
     # quick key specs shown under the title
     quick = {}
     for mm in re.finditer(
@@ -116,6 +126,21 @@ def scrape_phone_specs(phone_url):
             flat[f"{section}::{k}"] = v
     data["flat"] = flat
     return data
+
+
+def scrape_pictures_page(pictures_url, limit=4):
+    """Return list of high-quality image URLs from a phone's -pictures- page."""
+    html = get(pictures_url)
+    if not html:
+        return []
+    urls = []
+    for m in re.finditer(r"https://fdn2\.gsmarena\.com/vv/pics/[^\"'\s>]+\.jpg", html):
+        u = m.group(0)
+        if u not in urls:
+            urls.append(u)
+        if len(urls) >= limit:
+            break
+    return urls
 
 
 if __name__ == "__main__":

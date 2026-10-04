@@ -15,6 +15,7 @@ Run repeatedly (e.g. via cron) to keep data fresh:
 """
 import argparse
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -93,39 +94,53 @@ def cmd_specs(con, brand=None, all_brands=False, phone_id=None, series_id=None,
     print(f"specs updated for {len(rows)} phones")
 
 
-def cmd_images(con, brand=None, series_id=None, missing_only=True):
+def cmd_images(con, brand=None, series_id=None, missing_only=True, hq=True, limit=4):
+    """Download high-quality pictures-page images (all angles) per phone."""
     import requests
 
     os.makedirs(DATA_IMG, exist_ok=True)
     if series_id:
         rows = con.execute(
-            "SELECT id, name, image_url, local_image FROM phones WHERE series_id=?",
+            "SELECT id, name, gsmarena_url FROM phones WHERE series_id=?",
             (series_id,)).fetchall()
+    elif brand:
+        rows = con.execute(
+            "SELECT p.id, p.name, p.gsmarena_url FROM phones p JOIN brands b ON p.brand_id=b.id "
+            "WHERE b.name LIKE ?", (f"%{brand}%",)).fetchall()
     else:
-        q = "SELECT id, name, image_url, local_image FROM phones WHERE local_image IS NULL"
-        params: tuple = ()
-        if brand:
-            q = ("SELECT p.id, p.name, p.image_url, p.local_image FROM phones p "
-                 "JOIN brands b ON p.brand_id=b.id "
-                 "WHERE b.name LIKE ? AND p.local_image IS NULL")
-            params = (f"%{brand}%",)
-        rows = con.execute(q, params).fetchall()
+        rows = con.execute("SELECT id, name, gsmarena_url FROM phones").fetchall()
+
     if missing_only:
-        rows = [r for r in rows if not r["local_image"] or not os.path.exists(r["local_image"])]
-    for r in rows:
-        if not r["image_url"]:
+        rows = [r for r in rows if con.execute(
+            "SELECT COUNT(*) c FROM phone_images WHERE phone_id=?",
+            (r["id"],)).fetchone()["c"] == 0]
+
+    for i, r in enumerate(rows):
+        mm = re.search(r"(.+)-(\d+)\.php", r["gsmarena_url"] or "")
+        if not mm:
             continue
-        ext = os.path.splitext(r["image_url"].split("?")[0])[1] or ".jpg"
-        path = os.path.join(DATA_IMG, f"phone_{r['id']}{ext}")
-        try:
-            img = requests.get(r["image_url"], headers=gsmarena.UA, timeout=30).content
-            if len(img) > 2000:
-                open(path, "wb").write(img)
-                con.execute("UPDATE phones SET local_image=? WHERE id=?", (path, r["id"]))
-                con.commit()
-        except Exception:
-            pass
-    print(f"downloaded images, {len(rows)} candidates")
+        pics_url = f"{mm.group(1)}-pictures-{mm.group(2)}.php"
+        urls = gsmarena.scrape_pictures_page(pics_url, limit=limit) if hq else []
+        if not urls:
+            spec = gsmarena.scrape_phone_specs(r["gsmarena_url"])
+            urls = [spec["image_url"]] if spec and spec.get("image_url") else []
+        for pos, u in enumerate(urls):
+            ext = os.path.splitext(u.split("?")[0])[1] or ".jpg"
+            path = os.path.join(DATA_IMG, f"phone_{r['id']}_{pos}{ext}")
+            try:
+                img = requests.get(u, headers=gsmarena.UA, timeout=30).content
+                if len(img) > 2000:
+                    open(path, "wb").write(img)
+                    db.add_phone_image(con, r["id"], u, path, pos)
+                    if pos == 0:
+                        con.execute("UPDATE phones SET local_image=?, image_url=? WHERE id=?",
+                                    (path, u, r["id"]))
+                        con.commit()
+            except Exception:
+                pass
+        if (i + 1) % 10 == 0:
+            print(f"  {i + 1}/{len(rows)}")
+    print(f"images done for {len(rows)} phones")
 
 
 def main():

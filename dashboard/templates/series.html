@@ -5,6 +5,11 @@
   <div class="rowbtns" style="align-items:center">
     <label class="muted">Template:</label>
     <select id="tpl" class="btn ghost" style="padding:8px"></select>
+    <label class="muted">Quality:</label>
+    <select id="qty" class="btn ghost" style="padding:8px">
+      <option value="1080p">1080p HD</option>
+      <option value="1440p">1440p 2K</option>
+    </select>
     <button class="btn" onclick="buildSeries({{ series.id }},this)">🎬 Full Series Video</button>
     <button class="btn" onclick="buildSelected(this)">🎬 Selected Phones Video</button>
     <button class="btn ghost" onclick="scrapeSpecs({{ series.id }},this)">⬇ Scrape Specs</button>
@@ -57,6 +62,7 @@ fetch('/api/templates').then(r=>r.json()).then(ts=>{
   ts.forEach(t=>{const o=document.createElement('option');o.value=t.id;o.textContent=t.name;tplSel.appendChild(o);});
 });
 function curTpl(){return tplSel.value||'spec_showcase';}
+function curQty(){return document.getElementById('qty').value||'1080p';}
 // preview uses selected template
 const _mOpen=mOpen;
 mOpen=function(pid){mSlides=['/slide/'+pid+'/0?theme='+curTpl(),'/slide/'+pid+'/1?theme='+curTpl()];mShow(0);
@@ -67,7 +73,7 @@ function buildSelected(btn){
   if(!ids.length){toast('Pehle kuch phones select karo ✓');return;}
   btn.disabled=true;btn.textContent='⏳ Queued…';
   fetch('/api/build-selected-video',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({phone_ids:ids,style:curTpl()})})
+    body:JSON.stringify({phone_ids:ids,style:curTpl(),quality:curQty()})})
   .then(r=>r.json()).then(d=>{toast(d.ok?'Selected video queued ✓':(d.error||'error'));btn.disabled=false;btn.textContent='🎬 Selected Phones Video';});
 }
 function scrapeSpecs(sid,btn){btn.disabled=true;btn.textContent='⏳ Scraping…';
@@ -79,10 +85,10 @@ function scrapeImages(sid,btn){btn.disabled=true;btn.textContent='⏳ Scraping�
 // pass template into single-video builds too
 const _buildPhone=buildPhone, _buildSeries=buildSeries;
 buildPhone=function(pid,btn){btn.disabled=true;btn.textContent='⏳ Queued…';
-  fetch('/api/build-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_id:pid,style:curTpl()})})
+  fetch('/api/build-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_id:pid,style:curTpl(),quality:curQty()})})
   .then(r=>r.json()).then(()=>{toast('Video build queued ✓');btn.textContent='✓ Queued';});};
 buildSeries=function(sid,btn){btn.disabled=true;btn.textContent='⏳ Queued…';
-  fetch('/api/build-series-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series_id:sid,style:curTpl()})})
+  fetch('/api/build-series-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series_id:sid,style:curTpl(),quality:curQty()})})
   .then(r=>r.json()).then(()=>{toast('Full series video queued ✓');btn.textContent='✓ Queued';});};
 </script>
 {% endblock %}
