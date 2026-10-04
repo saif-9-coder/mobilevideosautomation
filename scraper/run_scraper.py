@@ -58,9 +58,17 @@ def cmd_phones(con, brand=None, all_brands=False):
     print(f"total {total} phones")
 
 
-def cmd_specs(con, brand=None, all_brands=False, phone_id=None):
+def cmd_specs(con, brand=None, all_brands=False, phone_id=None, series_id=None,
+              missing_only=False):
     if phone_id:
         rows = con.execute("SELECT id, gsmarena_url FROM phones WHERE id=?", (phone_id,)).fetchall()
+    elif series_id:
+        rows = con.execute(
+            "SELECT id, gsmarena_url, specs_json FROM phones WHERE series_id=?",
+            (series_id,)).fetchall()
+        if missing_only:
+            import json as _j
+            rows = [r for r in rows if not _j.loads(r["specs_json"] or "{}")]
     elif all_brands:
         rows = con.execute("SELECT id, gsmarena_url FROM phones").fetchall()
     else:
@@ -85,17 +93,25 @@ def cmd_specs(con, brand=None, all_brands=False, phone_id=None):
     print(f"specs updated for {len(rows)} phones")
 
 
-def cmd_images(con, brand=None):
+def cmd_images(con, brand=None, series_id=None, missing_only=True):
     import requests
 
     os.makedirs(DATA_IMG, exist_ok=True)
-    q = "SELECT id, name, image_url FROM phones WHERE local_image IS NULL"
-    params: tuple = ()
-    if brand:
-        q = ("SELECT p.id, p.name, p.image_url FROM phones p JOIN brands b ON p.brand_id=b.id "
-             "WHERE b.name LIKE ? AND p.local_image IS NULL")
-        params = (f"%{brand}%",)
-    rows = con.execute(q, params).fetchall()
+    if series_id:
+        rows = con.execute(
+            "SELECT id, name, image_url, local_image FROM phones WHERE series_id=?",
+            (series_id,)).fetchall()
+    else:
+        q = "SELECT id, name, image_url, local_image FROM phones WHERE local_image IS NULL"
+        params: tuple = ()
+        if brand:
+            q = ("SELECT p.id, p.name, p.image_url, p.local_image FROM phones p "
+                 "JOIN brands b ON p.brand_id=b.id "
+                 "WHERE b.name LIKE ? AND p.local_image IS NULL")
+            params = (f"%{brand}%",)
+        rows = con.execute(q, params).fetchall()
+    if missing_only:
+        rows = [r for r in rows if not r["local_image"] or not os.path.exists(r["local_image"])]
     for r in rows:
         if not r["image_url"]:
             continue
@@ -120,9 +136,10 @@ def main():
     p.add_argument("--brand"); p.add_argument("--all", action="store_true")
     p = sub.add_parser("specs")
     p.add_argument("--brand"); p.add_argument("--all", action="store_true")
-    p.add_argument("--phone-id", type=int)
+    p.add_argument("--phone-id", type=int); p.add_argument("--series-id", type=int)
+    p.add_argument("--missing-only", action="store_true")
     p = sub.add_parser("images")
-    p.add_argument("--brand")
+    p.add_argument("--brand"); p.add_argument("--series-id", type=int)
     a = ap.parse_args()
 
     con = db.connect()
@@ -131,9 +148,9 @@ def main():
     elif a.cmd == "phones":
         cmd_phones(con, a.brand, a.all)
     elif a.cmd == "specs":
-        cmd_specs(con, a.brand, a.all, a.phone_id)
+        cmd_specs(con, a.brand, a.all, a.phone_id, a.series_id, a.missing_only)
     elif a.cmd == "images":
-        cmd_images(con, a.brand)
+        cmd_images(con, a.brand, a.series_id)
 
 
 if __name__ == "__main__":

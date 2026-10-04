@@ -19,16 +19,54 @@ from video.builder import build_phone_video
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phone-id", type=int)
+    ap.add_argument("--phone-ids", default="",
+                    help="comma-separated phone ids -> one video from exactly these phones")
     ap.add_argument("--series-id", type=int)
     ap.add_argument("--style", default="spec_showcase")
+    ap.add_argument("--template", default=None,
+                    help="alias for --style: spec_showcase | dark_pro | cream_minimal")
     ap.add_argument("--secs", type=int, default=10)
     ap.add_argument("--music", default=None)
     ap.add_argument("--no-intro", action="store_true")
     ap.add_argument("--limit", type=int, default=0,
                     help="only first N phones (for testing)")
     a = ap.parse_args()
+    if a.template:
+        a.style = a.template
+
+    from video.builder import build_series_video
+    import json as _j
+
+    def _rows_to_phones(rows):
+        phones = []
+        for r in rows:
+            d = dict(r)
+            d["specs"] = _j.loads(d["specs_json"] or "{}")
+            phones.append(d)
+        return phones
 
     con = db.connect()
+    if a.phone_ids:
+        ids = [int(x) for x in a.phone_ids.split(",") if x.strip().isdigit()]
+        rows = con.execute(
+            "SELECT p.*, b.name AS brand_name, s.name AS series_name FROM phones p "
+            "JOIN brands b ON p.brand_id=b.id JOIN series s ON p.series_id=s.id "
+            f"WHERE p.id IN ({','.join('?' * len(ids))})", ids).fetchall()
+        phones = _rows_to_phones(rows)
+        if not phones:
+            print("no phones found"); return
+        out = build_series_video(phones, phones[0]["brand_name"],
+                                 f"{phones[0]['series_name']} Selection",
+                                 style=a.style, secs_per_phone=a.secs, music=a.music)
+        con.execute(
+            "INSERT INTO videos (title, file_path, status, style, created_at)"
+            " VALUES (?, ?, 'ready', ?, ?)",
+            (f"{phones[0]['brand_name']} selection ({len(phones)} phones)", out,
+             a.style, db.now()))
+        con.commit()
+        print("built:", out)
+        return
+
     if a.phone_id:
         phone = db.get_phone(con, a.phone_id)
         out = build_phone_video(phone, style=a.style, secs_per_phone=a.secs,
@@ -40,17 +78,11 @@ def main():
         con.commit()
         print("built:", out)
     elif a.series_id:
-        from video.builder import build_series_video
         rows = con.execute(
             "SELECT p.*, b.name AS brand_name, s.name AS series_name FROM phones p "
             "JOIN brands b ON p.brand_id=b.id JOIN series s ON p.series_id=s.id "
             "WHERE p.series_id=? ORDER BY p.announced", (a.series_id,)).fetchall()
-        phones = []
-        for r in rows:
-            d = dict(r)
-            import json as _j
-            d["specs"] = _j.loads(d["specs_json"] or "{}")
-            phones.append(d)
+        phones = _rows_to_phones(rows)
         if not phones:
             print("no phones in series")
             return
@@ -73,7 +105,7 @@ def main():
         con.commit()
         print("built:", out)
     else:
-        print("give --phone-id or --series-id")
+        print("give --phone-id, --phone-ids or --series-id")
 
 
 if __name__ == "__main__":

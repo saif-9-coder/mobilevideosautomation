@@ -1,16 +1,25 @@
 {% extends "base.html" %}{% block body %}
 <h1>{{ series.brand_name }} {{ series.name }}</h1>
-<p>
-  <button class="btn" onclick="buildSeries({{ series.id }},this)">🎬 Full Series Video</button>
-  <span class="muted">poori series ki ek video ban jayegi</span>
-</p>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="rowbtns" style="align-items:center">
+    <label class="muted">Template:</label>
+    <select id="tpl" class="btn ghost" style="padding:8px"></select>
+    <button class="btn" onclick="buildSeries({{ series.id }},this)">🎬 Full Series Video</button>
+    <button class="btn" onclick="buildSelected(this)">🎬 Selected Phones Video</button>
+    <button class="btn ghost" onclick="scrapeSpecs({{ series.id }},this)">⬇ Scrape Specs</button>
+    <button class="btn ghost" onclick="scrapeImages({{ series.id }},this)">🖼 Scrape Images</button>
+    <label class="muted"><input type="checkbox" id="selall" onclick="document.querySelectorAll('.pc').forEach(c=>c.checked=this.checked)"> select all</label>
+  </div>
+  <div class="muted" style="margin-top:8px">Template select karo — video usi style mein banegi. Phones select karke "Selected Phones Video" dabao.</div>
+</div>
 
 {% if videos %}
 <h2>Series videos</h2>
 <div class="grid">
 {% for v in videos %}
 <div class="card"><b>#{{ v.id }}</b> {{ v.title }}
-<div class="muted">{{ v.status }} · {{ v.created_at or '' }}</div>
+<div class="muted">{{ v.style }} · {{ v.status }} · {{ v.created_at or '' }}</div>
 {% if v.status=='ready' and v.file_path %}<div style="margin-top:8px"><video controls preload="none" src="/video-file/{{ v.id }}"></video></div>{% endif %}
 </div>
 {% endfor %}
@@ -21,19 +30,59 @@
 <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
 {% for p in phones %}
 <div class="card pcard">
+  <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+    <input type="checkbox" class="pc" value="{{ p.id }}">
+    <b>{{ p.name }}</b>
+  </label>
   {% if p.local_image %}<img class="phone tall" loading="lazy" src="/img/{{ p.id }}">{% endif %}
-  <b>{{ p.name }}</b>
-  <div class="muted">{{ p.announced or '' }}</div>
+  <div class="muted">{{ p.announced or '' }}
+    {% if p.specs %}· <span style="color:#5fd97a">specs ✓</span>{% else %}· <span style="color:#e0a13e">no specs</span>{% endif %}
+    {% if p.local_image %}· <span style="color:#5fd97a">img ✓</span>{% else %}· <span style="color:#e0a13e">no img</span>{% endif %}
+  </div>
   {% if p.key.display %}<div class="spec"><b>Display:</b> {{ p.key.display }}</div>{% endif %}
   {% if p.key.chipset %}<div class="spec"><b>Chip:</b> {{ p.key.chipset }}</div>{% endif %}
   {% if p.key.ram %}<div class="spec"><b>Memory:</b> {{ p.key.ram }}</div>{% endif %}
   {% if p.key.battery %}<div class="spec"><b>Battery:</b> {{ p.key.battery }}</div>{% endif %}
   {% if p.key.camera %}<div class="spec"><b>Camera:</b> {{ p.key.camera }}</div>{% endif %}
   <div class="rowbtns">
-    <button class="btn ghost" onclick="mOpen({{ p.id }},'{{ p.name }}')">👁 Preview</button>
+    <button class="btn ghost" onclick="mOpen({{ p.id }})">👁 Preview</button>
     <button class="btn" onclick="buildPhone({{ p.id }},this)">🎬 Video</button>
   </div>
 </div>
 {% endfor %}
 </div>
+<script>
+const tplSel=document.getElementById('tpl');
+fetch('/api/templates').then(r=>r.json()).then(ts=>{
+  ts.forEach(t=>{const o=document.createElement('option');o.value=t.id;o.textContent=t.name;tplSel.appendChild(o);});
+});
+function curTpl(){return tplSel.value||'spec_showcase';}
+// preview uses selected template
+const _mOpen=mOpen;
+mOpen=function(pid){mSlides=['/slide/'+pid+'/0?theme='+curTpl(),'/slide/'+pid+'/1?theme='+curTpl()];mShow(0);
+  document.getElementById('modal').classList.add('open');
+  clearInterval(mTimer);mTimer=setInterval(()=>mShow(mIdx+1),2500);};
+function buildSelected(btn){
+  const ids=[...document.querySelectorAll('.pc:checked')].map(c=>c.value);
+  if(!ids.length){toast('Pehle kuch phones select karo ✓');return;}
+  btn.disabled=true;btn.textContent='⏳ Queued…';
+  fetch('/api/build-selected-video',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({phone_ids:ids,style:curTpl()})})
+  .then(r=>r.json()).then(d=>{toast(d.ok?'Selected video queued ✓':(d.error||'error'));btn.disabled=false;btn.textContent='🎬 Selected Phones Video';});
+}
+function scrapeSpecs(sid,btn){btn.disabled=true;btn.textContent='⏳ Scraping…';
+  fetch('/api/scrape-specs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series_id:sid})})
+  .then(r=>r.json()).then(()=>{toast('Specs scraping started ✓ (page refresh karo thodi der baad)');btn.disabled=false;btn.textContent='⬇ Scrape Specs';});}
+function scrapeImages(sid,btn){btn.disabled=true;btn.textContent='⏳ Scraping…';
+  fetch('/api/scrape-images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series_id:sid})})
+  .then(r=>r.json()).then(()=>{toast('Images downloading ✓ (page refresh karo thodi der baad)');btn.disabled=false;btn.textContent='🖼 Scrape Images';});}
+// pass template into single-video builds too
+const _buildPhone=buildPhone, _buildSeries=buildSeries;
+buildPhone=function(pid,btn){btn.disabled=true;btn.textContent='⏳ Queued…';
+  fetch('/api/build-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_id:pid,style:curTpl()})})
+  .then(r=>r.json()).then(()=>{toast('Video build queued ✓');btn.textContent='✓ Queued';});};
+buildSeries=function(sid,btn){btn.disabled=true;btn.textContent='⏳ Queued…';
+  fetch('/api/build-series-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({series_id:sid,style:curTpl()})})
+  .then(r=>r.json()).then(()=>{toast('Full series video queued ✓');btn.textContent='✓ Queued';});};
+</script>
 {% endblock %}

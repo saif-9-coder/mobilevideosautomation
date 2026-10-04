@@ -150,14 +150,14 @@ def build_phone_video(phone, style="spec_showcase", secs_per_phone=10,
 
     data = card_data(phone)
     img_path = prepare_image(phone)
-    card_png = os.path.join(WORK_DIR, f"card_{phone['id']}.png")
-    render_card(data, img_path, card_png)
+    card_png = os.path.join(WORK_DIR, f"card_{phone['id']}_{style}.png")
+    render_card(data, img_path, card_png, theme=style)
 
     segments = []
     if intro:
-        intro_png = os.path.join(WORK_DIR, f"intro_{phone['id']}.png")
+        intro_png = os.path.join(WORK_DIR, f"intro_{phone['id']}_{style}.png")
         render_intro(phone["name"].split()[0], data["title"], intro_png,
-                     [img_path] if img_path else None)
+                     [img_path] if img_path else None, theme=style)
         segments.append((intro_png, 5))
     segments.append((card_png, secs_per_phone))
 
@@ -173,15 +173,16 @@ def build_series_video(phones, brand, series, style="spec_showcase",
     os.makedirs(WORK_DIR, exist_ok=True)
 
     segments = []
-    intro_png = os.path.join(WORK_DIR, f"intro_series_{phones[0]['series_id']}.png")
+    intro_png = os.path.join(WORK_DIR, f"intro_series_{phones[0]['series_id']}_{style}.png")
     imgs = [prepare_image(p) for p in phones[:6]]
-    render_intro(brand, f"{series} {title}", intro_png, [i for i in imgs if i])
+    render_intro(brand, f"{series} {title}", intro_png, [i for i in imgs if i],
+                 theme=style)
     segments.append((intro_png, 5))
 
     for ph in phones:
         data = card_data(ph)
-        png = os.path.join(WORK_DIR, f"card_{ph['id']}.png")
-        render_card(data, prepare_image(ph), png)
+        png = os.path.join(WORK_DIR, f"card_{ph['id']}_{style}.png")
+        render_card(data, prepare_image(ph), png, theme=style)
         segments.append((png, secs_per_phone))
 
     seg_files = _segments_to_mp4(segments, "sseg")

@@ -127,20 +127,21 @@ def slide(phone_id, idx):
     from video.style_spec import render_card, render_intro
     from video.builder import prepare_image
 
+    theme = request.args.get("theme", "spec_showcase")
     con = db.connect()
     phone = db.get_phone(con, phone_id)
     if not phone:
         return ("not found", 404)
     os.makedirs(FRAMES, exist_ok=True)
-    out = os.path.join(FRAMES, f"preview_{phone_id}_{idx}.png")
+    out = os.path.join(FRAMES, f"preview_{phone_id}_{idx}_{theme}.png")
     if not os.path.exists(out):
         data = card_data(phone)
         img_path = prepare_image(phone)
         if idx == 0:
             render_intro(phone["name"].split()[0], data["title"], out,
-                         [img_path] if img_path else None)
+                         [img_path] if img_path else None, theme=theme)
         else:
-            render_card(data, img_path, out)
+            render_card(data, img_path, out, theme=theme)
     return send_file(out)
 
 
@@ -192,6 +193,47 @@ def api_build_series_video():
          style, db.now()))
     con.commit()
     return jsonify({"ok": True})
+
+
+@app.route("/api/build-selected-video", methods=["POST"])
+def api_build_selected_video():
+    body = request.get_json(force=True)
+    ids = [str(int(i)) for i in body.get("phone_ids", [])]
+    style = body.get("style", "spec_showcase")
+    if not ids:
+        return jsonify({"ok": False, "error": "no phones selected"}), 400
+    _launch([os.path.join(ROOT, "video", "run_builder.py"),
+             "--phone-ids", ",".join(ids), "--style", style])
+    con = db.connect()
+    con.execute(
+        "INSERT INTO videos (title, status, style, created_at) VALUES (?, 'queued', ?, ?)",
+        (f"selection ({len(ids)} phones)", style, db.now()))
+    con.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scrape-specs", methods=["POST"])
+def api_scrape_specs():
+    body = request.get_json(force=True)
+    series_id = int(body["series_id"])
+    _launch([os.path.join(ROOT, "scraper", "run_scraper.py"),
+             "specs", "--series-id", str(series_id), "--missing-only"])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scrape-images", methods=["POST"])
+def api_scrape_images():
+    body = request.get_json(force=True)
+    series_id = int(body["series_id"])
+    _launch([os.path.join(ROOT, "scraper", "run_scraper.py"),
+             "images", "--series-id", str(series_id)])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/templates")
+def api_templates():
+    from video.style_spec import TEMPLATE_CHOICES
+    return jsonify([{"id": t[0], "name": t[1]} for t in TEMPLATE_CHOICES])
 
 
 @app.route("/api/delete-videos", methods=["POST"])

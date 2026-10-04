@@ -8,11 +8,35 @@ import os
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 W, H = 1920, 1080
-BG = (199, 208, 222)          # #C7D0DE
-GRID = (178, 189, 208)
-BLACK = (20, 22, 28)
-GRAY = (96, 106, 124)
-ICON = (107, 118, 136)
+
+THEMES = {
+    "spec_showcase": {  # Techvolution light style (default)
+        "bg": (199, 208, 222), "grid": (178, 189, 208),
+        "text": (20, 22, 28), "gray": (96, 106, 124), "icon": (107, 118, 136),
+        "accent": (255, 140, 0), "year_alpha": 46,
+    },
+    "dark_pro": {  # dark navy + electric blue
+        "bg": (13, 18, 32), "grid": (28, 38, 62),
+        "text": (240, 244, 252), "gray": (148, 160, 182), "icon": (110, 168, 255),
+        "accent": (255, 140, 0), "year_alpha": 40,
+    },
+    "cream_minimal": {  # warm minimal
+        "bg": (246, 241, 232), "grid": (228, 220, 203),
+        "text": (32, 30, 26), "gray": (130, 120, 104), "icon": (176, 148, 96),
+        "accent": (214, 96, 32), "year_alpha": 44,
+    },
+}
+TEMPLATE_CHOICES = [
+    ("spec_showcase", "Spec Showcase (light)"),
+    ("dark_pro", "Dark Pro"),
+    ("cream_minimal", "Cream Minimal"),
+]
+
+BG = THEMES["spec_showcase"]["bg"]
+GRID = THEMES["spec_showcase"]["grid"]
+BLACK = THEMES["spec_showcase"]["text"]
+GRAY = THEMES["spec_showcase"]["gray"]
+ICON = THEMES["spec_showcase"]["icon"]
 
 FONT_BOLD = os.environ.get("MVA_FONT_BOLD", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 FONT_REG = os.environ.get("MVA_FONT_REG", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
@@ -25,16 +49,21 @@ def font(path, size):
         return ImageFont.load_default()
 
 
-def background():
-    img = Image.new("RGB", (W, H), BG)
+def _th(theme):
+    return THEMES.get(theme, THEMES["spec_showcase"])
+
+
+def background(theme="spec_showcase"):
+    t = _th(theme)
+    img = Image.new("RGB", (W, H), t["bg"])
     d = ImageDraw.Draw(img)
     # subtle wavy grid
     for y in range(0, H + 90, 90):
         pts = [(x, y + 14 * math.sin(x / 260 + y / 300)) for x in range(0, W + 20, 20)]
-        d.line(pts, fill=GRID, width=2)
+        d.line(pts, fill=t["grid"], width=2)
     for x in range(0, W + 140, 140):
         pts = [(x + 14 * math.sin(y / 260 + x / 300), y) for y in range(0, H + 20, 20)]
-        d.line(pts, fill=GRID, width=2)
+        d.line(pts, fill=t["grid"], width=2)
     return img
 
 
@@ -81,12 +110,14 @@ def drop_shadow(base, img, pos, blur=28, offset=(20, 26), opacity=110):
     return base
 
 
-def render_card(data, phone_img_path=None, out_path=None):
+def render_card(data, phone_img_path=None, out_path=None, theme="spec_showcase"):
     """
     data: dict from spec_fields.card_data — title, released, year, badges, rows.
     Returns PIL image (also saved to out_path if given).
     """
-    img = background().convert("RGBA")
+    t = _th(theme)
+    BLACK, GRAY, ICON = t["text"], t["gray"], t["icon"]
+    img = background(theme).convert("RGBA")
     d = ImageDraw.Draw(img)
     fb = lambda s: font(FONT_BOLD, s)
     fr = lambda s: font(FONT_REG, s)
@@ -96,7 +127,8 @@ def render_card(data, phone_img_path=None, out_path=None):
         yf = font(FONT_BOLD, 300)
         tw = d.textlength(data["year"], font=yf)
         timg = Image.new("RGBA", (int(tw) + 40, 360), (0, 0, 0, 0))
-        ImageDraw.Draw(timg).text((20, 0), data["year"], font=yf, fill=(20, 22, 28, 46))
+        ImageDraw.Draw(timg).text((20, 0), data["year"], font=yf,
+                                  fill=BLACK + (t["year_alpha"],))
         img.alpha_composite(timg, (W - int(tw) - 420, H - 380))
 
     # title + released (auto-fit title so it never hits the badges)
@@ -124,7 +156,7 @@ def render_card(data, phone_img_path=None, out_path=None):
     for kind, label, value, sub in data["rows"]:
         if not value and not sub:
             continue
-        draw_icon(d, kind, 90, y + 8)
+        draw_icon(d, kind, 90, y + 8, color=ICON)
         d.text((185, y), label, font=fb(30), fill=GRAY)
         if value:
             d.text((185, y + 38), value, font=fb(58), fill=BLACK)
@@ -148,13 +180,15 @@ def render_card(data, phone_img_path=None, out_path=None):
     return out
 
 
-def render_intro(brand, series, out_path, phone_imgs=None):
+def render_intro(brand, series, out_path, phone_imgs=None, theme="spec_showcase"):
     """Thumbnail-style intro card: BRAND / SERIES / EVOLUTION."""
-    img = background().convert("RGBA")
+    t = _th(theme)
+    BLACK, GRAY, ACCENT = t["text"], t["gray"], t["accent"]
+    img = background(theme).convert("RGBA")
     d = ImageDraw.Draw(img)
     fb = lambda s: font(FONT_BOLD, s)
     d.text((90, 200), brand.upper(), font=fb(120), fill=BLACK)
-    d.text((94, 350), f"{series.upper()} EVOLUTION", font=fb(90), fill=BLACK)
+    d.text((94, 350), f"{series.upper()} EVOLUTION", font=fb(90), fill=ACCENT)
     d.text((96, 480), "Full specifications showcase", font=font(FONT_REG, 44), fill=GRAY)
     if phone_imgs:
         x = 90
