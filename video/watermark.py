@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v10"
+_CACHE_VERSION = "v11"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.78
@@ -181,11 +181,23 @@ def _remove_box_lama(img_bgr, box):
     x1, y1 = min(w, rx + tw + pad), min(h, ry + th + pad)
     crop_bgr = img_bgr[y0:y1, x0:x1]
     ch, cw = crop_bgr.shape[:2]
-    # Mask for the watermark box within the crop
-    mask = np.zeros((ch, cw), dtype=np.uint8)
-    mask[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 255
-    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
-                      iterations=2)
+    # Tight mask: only the actual text strokes, not the full box.
+    # This keeps LaMa's regeneration minimal so surrounding pixels
+    # stay pixel-identical and nothing shifts.
+    crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    bg_med = cv2.medianBlur(crop_gray, 21)
+    strokes = (cv2.absdiff(crop_gray.astype(np.float32),
+                           bg_med.astype(np.float32)) > 4).astype(np.uint8)
+    # Restrict to the verified box area
+    box_mask = np.zeros((ch, cw), dtype=np.uint8)
+    box_mask[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 1
+    strokes = strokes * box_mask
+    strokes = cv2.dilate(strokes,
+                         cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+                         iterations=1)
+    if strokes.sum() < 20:
+        return False
+    mask = (strokes * 255).astype(np.uint8)
     # LaMa expects RGB
     crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
     try:
