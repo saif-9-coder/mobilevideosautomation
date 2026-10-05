@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v7"
+_CACHE_VERSION = "v8"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.78
@@ -151,32 +151,44 @@ def _detect(gray):
 
 
 def _remove_box(img_bgr, gray, box):
-    """Erase verified watermark text with tight-mask Telea inpainting.
+    """Erase verified watermark text using vertical background fill.
 
-    Only the exact text-stroke pixels are interpolated (from immediate
-    neighbours); everything else stays bit-identical, so texture, grain
-    and gradients are preserved like professional tools.
+    Saif's method: the watermark text is thin and horizontal, so for each
+    text pixel, copy the background color from the nearest non-text pixels
+    directly above/below. This is deterministic - no inpainting smudges,
+    no guessing, just the actual surrounding colors.
     """
     rx, ry, tw, th = box
     h, w = gray.shape
-    x0, y0 = max(0, rx - 3), max(0, ry - 3)
-    x1, y1 = min(w, rx + tw + 3), min(h, ry + th + 3)
+    x0, y0 = max(0, rx - 5), max(0, ry - 5)
+    x1, y1 = min(w, rx + tw + 5), min(h, ry + th + 5)
     if x1 - x0 < 8 or y1 - y0 < 4:
         return False
     patch = gray[y0:y1, x0:x1].astype(np.float32)
     bg_med = cv2.medianBlur(gray[y0:y1, x0:x1], 21).astype(np.float32)
-    # Aggressive but tight stroke mask: the box is already verified to
-    # contain the watermark, so catch faint halo pixels too. Dilated
-    # slightly to cover anti-aliased text edges fully.
     strokes = (cv2.absdiff(patch, bg_med) > 4).astype(np.uint8)
     strokes = cv2.dilate(strokes,
                          cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
-                         iterations=2)
+                         iterations=1)
     if strokes.sum() < 20:
         return False
-    mask = np.zeros((h, w), np.uint8)
-    mask[y0:y1, x0:x1] = strokes * 255
-    img_bgr[:] = cv2.inpaint(img_bgr, mask, 4, cv2.INPAINT_TELEA)
+    region = img_bgr[y0:y1, x0:x1].copy()
+    ph, pw = region.shape[:2]
+    sm = strokes.astype(bool)
+    # vertical 1D interpolation per column per channel
+    for x in range(pw):
+        col_mask = sm[:, x]
+        if not col_mask.any():
+            continue
+        good = np.where(~col_mask)[0]
+        bad = np.where(col_mask)[0]
+        if len(good) == 0:
+            continue
+        for c in range(3):
+            col = region[:, x, c].astype(np.float32)
+            col[bad] = np.interp(bad, good, col[good])
+            region[:, x, c] = np.clip(col, 0, 255)
+    img_bgr[y0:y1, x0:x1] = region.astype(np.uint8)
     return True
 
 
