@@ -19,6 +19,7 @@ from video.builder import build_phone_video
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phone-id", type=int)
+    ap.add_argument("--video-id", type=int, help="existing queued video ID to update")
     ap.add_argument("--phone-ids", default="",
                     help="comma-separated phone ids -> one video from exactly these phones")
     ap.add_argument("--selections", default="",
@@ -56,96 +57,98 @@ def main():
         return phones
 
     con = db.connect()
-    if a.selections:
-        sel = _j.loads(a.selections)  # {phone_id: [positions]}
-        ids = [int(x) for x in sel.keys()]
-        rows = con.execute(
-            "SELECT p.*, b.name AS brand_name, s.name AS series_name FROM phones p "
-            "JOIN brands b ON p.brand_id=b.id JOIN series s ON p.series_id=s.id "
-            f"WHERE p.id IN ({','.join('?' * len(ids))})", ids).fetchall()
-        phones = _rows_to_phones(rows)
-        if not phones:
-            print("no phones found"); return
-        for ph in phones:
-            want = sel.get(str(ph["id"]), sel.get(ph["id"], []))
-            all_imgs = [ir["local_path"] for ir in con.execute(
-                "SELECT local_path, position FROM phone_images WHERE phone_id=? AND local_path IS NOT NULL "
-                "ORDER BY position", (ph["id"],)).fetchall()]
-            picked = [all_imgs[i] for i in want if isinstance(i, int) and i < len(all_imgs)]
-            ph["images"] = picked or all_imgs[:1]
-        out = build_series_video(phones, phones[0]["brand_name"],
-                                 f"{phones[0]['series_name']} Selection",
-                                 style=a.style, secs_per_phone=a.secs,
-                                 music=a.music, quality=a.quality)
-        con.execute(
-            "INSERT INTO videos (title, file_path, status, style, created_at)"
-            " VALUES (?, ?, 'ready', ?, ?)",
-            (f"{phones[0]['brand_name']} selection ({len(phones)} phones)", out,
-             a.style, db.now()))
-        con.commit()
-        print("built:", out)
-        return
 
-    if a.phone_ids:
-        ids = [int(x) for x in a.phone_ids.split(",") if x.strip().isdigit()]
-        rows = con.execute(
-            "SELECT p.*, b.name AS brand_name, s.name AS series_name FROM phones p "
-            "JOIN brands b ON p.brand_id=b.id JOIN series s ON p.series_id=s.id "
-            f"WHERE p.id IN ({','.join('?' * len(ids))})", ids).fetchall()
-        phones = _rows_to_phones(rows)
-        if not phones:
-            print("no phones found"); return
-        out = build_series_video(phones, phones[0]["brand_name"],
-                                 f"{phones[0]['series_name']} Selection",
-                                 style=a.style, secs_per_phone=a.secs, music=a.music, quality=a.quality)
-        con.execute(
-            "INSERT INTO videos (title, file_path, status, style, created_at)"
-            " VALUES (?, ?, 'ready', ?, ?)",
-            (f"{phones[0]['brand_name']} selection ({len(phones)} phones)", out,
-             a.style, db.now()))
+    def _save_db(out, phone_id=None, series_id=None, title=None):
+        if a.video_id:
+            con.execute(
+                "UPDATE videos SET file_path=?, status='ready' WHERE id=?",
+                (out, a.video_id)
+            )
+        else:
+            con.execute(
+                "INSERT INTO videos (phone_id, series_id, title, file_path, status, style, created_at)"
+                " VALUES (?,?,?,?, 'ready', ?, ?)",
+                (phone_id, series_id, title, out, a.style, db.now())
+            )
         con.commit()
-        print("built:", out)
-        return
 
-    if a.phone_id:
-        phone = db.get_phone(con, a.phone_id)
-        out = build_phone_video(phone, style=a.style, secs_per_phone=a.secs,
-                                intro=not a.no_intro, music=a.music, quality=a.quality)
-        con.execute(
-            "INSERT INTO videos (phone_id, series_id, title, file_path, status, style, created_at)"
-            " VALUES (?,?,?,?, 'ready', ?, ?)",
-            (a.phone_id, phone["series_id"], phone["name"], out, a.style, db.now()))
-        con.commit()
-        print("built:", out)
-    elif a.series_id:
-        rows = con.execute(
-            "SELECT p.*, b.name AS brand_name, s.name AS series_name FROM phones p "
-            "JOIN brands b ON p.brand_id=b.id JOIN series s ON p.series_id=s.id "
-            "WHERE p.series_id=? ORDER BY p.announced", (a.series_id,)).fetchall()
-        phones = _rows_to_phones(rows)
-        if not phones:
-            print("no phones in series")
+    try:
+        if a.selections:
+            sel = _j.loads(a.selections)  # {phone_id: [positions]}
+            ids = [int(x) for x in sel.keys()]
+            rows = con.execute(
+                "SELECT p.*, b.name AS brand_name, s.name AS series_name FROM phones p "
+                "JOIN brands b ON p.brand_id=b.id JOIN series s ON p.series_id=s.id "
+                f"WHERE p.id IN ({','.join('?' * len(ids))})", ids).fetchall()
+            phones = _rows_to_phones(rows)
+            if not phones:
+                print("no phones found"); return
+            for ph in phones:
+                want = sel.get(str(ph["id"]), sel.get(ph["id"], []))
+                all_imgs = [ir["local_path"] for ir in con.execute(
+                    "SELECT local_path, position FROM phone_images WHERE phone_id=? AND local_path IS NOT NULL "
+                    "ORDER BY position", (ph["id"],)).fetchall()]
+                picked = [all_imgs[i] for i in want if isinstance(i, int) and i < len(all_imgs)]
+                ph["images"] = picked or all_imgs[:1]
+            out = build_series_video(phones, phones[0]["brand_name"],
+                                     f"{phones[0]['series_name']} Selection",
+                                     style=a.style, secs_per_phone=a.secs,
+                                     music=a.music, quality=a.quality)
+            _save_db(out, title=f"{phones[0]['brand_name']} selection ({len(phones)} phones)")
+            print("built:", out)
             return
-        if a.limit:
-            with_specs = [p for p in phones if p.get("specs")]
-            phones = (with_specs or phones)[:a.limit]
-        # chronological order by announced year (fallback: name)
-        import re as _re
-        def _yr(p):
-            m = _re.search(r"(\d{4})", p.get("announced") or "")
-            return (int(m.group(1)) if m else 9999, p["name"])
-        phones.sort(key=_yr)
-        out = build_series_video(phones, rows[0]["brand_name"], rows[0]["series_name"],
-                                 style=a.style, secs_per_phone=a.secs, music=a.music, quality=a.quality)
-        con.execute(
-            "INSERT INTO videos (series_id, title, file_path, status, style, created_at)"
-            " VALUES (?,?,?, 'ready', ?, ?)",
-            (a.series_id, f"{rows[0]['brand_name']} {rows[0]['series_name']}",
-             out, a.style, db.now()))
-        con.commit()
-        print("built:", out)
-    else:
-        print("give --phone-id, --phone-ids or --series-id")
+
+        if a.phone_ids:
+            ids = [int(x) for x in a.phone_ids.split(",") if x.strip().isdigit()]
+            rows = con.execute(
+                "SELECT p.*, b.name AS brand_name, s.name AS series_name FROM phones p "
+                "JOIN brands b ON p.brand_id=b.id JOIN series s ON p.series_id=s.id "
+                f"WHERE p.id IN ({','.join('?' * len(ids))})", ids).fetchall()
+            phones = _rows_to_phones(rows)
+            if not phones:
+                print("no phones found"); return
+            out = build_series_video(phones, phones[0]["brand_name"],
+                                     f"{phones[0]['series_name']} Selection",
+                                     style=a.style, secs_per_phone=a.secs, music=a.music, quality=a.quality)
+            _save_db(out, title=f"{phones[0]['brand_name']} selection ({len(phones)} phones)")
+            print("built:", out)
+            return
+
+        if a.phone_id:
+            phone = db.get_phone(con, a.phone_id)
+            out = build_phone_video(phone, style=a.style, secs_per_phone=a.secs,
+                                    intro=not a.no_intro, music=a.music, quality=a.quality)
+            _save_db(out, phone_id=a.phone_id, series_id=phone["series_id"], title=phone["name"])
+            print("built:", out)
+        elif a.series_id:
+            rows = con.execute(
+                "SELECT p.*, b.name AS brand_name, s.name AS series_name FROM phones p "
+                "JOIN brands b ON p.brand_id=b.id JOIN series s ON p.series_id=s.id "
+                "WHERE p.series_id=? ORDER BY p.announced", (a.series_id,)).fetchall()
+            phones = _rows_to_phones(rows)
+            if not phones:
+                print("no phones in series")
+                return
+            if a.limit:
+                with_specs = [p for p in phones if p.get("specs")]
+                phones = (with_specs or phones)[:a.limit]
+            import re as _re
+            def _yr(p):
+                m = _re.search(r"(\d{4})", p.get("announced") or "")
+                return (int(m.group(1)) if m else 9999, p["name"])
+            phones.sort(key=_yr)
+            out = build_series_video(phones, rows[0]["brand_name"], rows[0]["series_name"],
+                                     style=a.style, secs_per_phone=a.secs, music=a.music, quality=a.quality)
+            _save_db(out, series_id=a.series_id, title=f"{rows[0]['brand_name']} {rows[0]['series_name']}")
+            print("built:", out)
+        else:
+            print("give --phone-id, --phone-ids or --series-id")
+    except Exception as e:
+        if a.video_id:
+            con.execute("UPDATE videos SET status='failed' WHERE id=?", (a.video_id,))
+            con.commit()
+        raise e
+
 
 
 if __name__ == "__main__":

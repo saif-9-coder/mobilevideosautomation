@@ -4,3 +4,4 @@ data/
 output/
 *.log
 .env
+venv/

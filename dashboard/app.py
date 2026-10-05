@@ -198,14 +198,16 @@ def api_build_video():
     body = request.get_json(force=True)
     phone_id, style = body.get("phone_id"), body.get("style", "spec_showcase")
     quality = body.get("quality", "1080p")
-    _launch([os.path.join(ROOT, "video", "run_builder.py"),
-             "--phone-id", str(phone_id), "--style", style, "--quality", quality])
     con = db.connect()
-    con.execute(
+    cur = con.execute(
         "INSERT INTO videos (phone_id, title, status, style, created_at) "
         "VALUES (?,?, 'queued', ?, ?)",
         (phone_id, f"phone_{phone_id}", style, db.now()))
+    vid = cur.lastrowid
     con.commit()
+    _launch([os.path.join(ROOT, "video", "run_builder.py"),
+             "--phone-id", str(phone_id), "--video-id", str(vid),
+             "--style", style, "--quality", quality])
     return jsonify({"ok": True})
 
 
@@ -214,18 +216,20 @@ def api_build_series_video():
     body = request.get_json(force=True)
     series_id, style = body.get("series_id"), body.get("style", "spec_showcase")
     quality = body.get("quality", "1080p")
-    _launch([os.path.join(ROOT, "video", "run_builder.py"),
-             "--series-id", str(series_id), "--style", style, "--quality", quality])
     con = db.connect()
     s = con.execute(
         "SELECT s.name, b.name AS bn FROM series s JOIN brands b ON s.brand_id=b.id "
         "WHERE s.id=?", (series_id,)).fetchone()
-    con.execute(
+    title = f"{s['bn']} {s['name']}" if s else f"series_{series_id}"
+    cur = con.execute(
         "INSERT INTO videos (series_id, title, status, style, created_at) "
         "VALUES (?,?, 'queued', ?, ?)",
-        (series_id, f"{s['bn']} {s['name']}" if s else f"series_{series_id}",
-         style, db.now()))
+        (series_id, title, style, db.now()))
+    vid = cur.lastrowid
     con.commit()
+    _launch([os.path.join(ROOT, "video", "run_builder.py"),
+             "--series-id", str(series_id), "--video-id", str(vid),
+             "--style", style, "--quality", quality])
     return jsonify({"ok": True})
 
 
@@ -239,23 +243,30 @@ def api_build_selected_video():
         sel = body["selections"]
         if not sel:
             return jsonify({"ok": False, "error": "no images selected"}), 400
-        _launch([os.path.join(ROOT, "video", "run_builder.py"),
-                 "--selections", _j.dumps(sel), "--style", style,
-                 "--quality", quality])
         n = len(sel)
+        con = db.connect()
+        cur = con.execute(
+            "INSERT INTO videos (title, status, style, created_at) VALUES (?, 'queued', ?, ?)",
+            (f"selection ({n} phones)", style, db.now()))
+        vid = cur.lastrowid
+        con.commit()
+        _launch([os.path.join(ROOT, "video", "run_builder.py"),
+                 "--selections", _j.dumps(sel), "--video-id", str(vid),
+                 "--style", style, "--quality", quality])
     else:
         ids = [str(int(i)) for i in body.get("phone_ids", [])]
         if not ids:
             return jsonify({"ok": False, "error": "no phones selected"}), 400
-        _launch([os.path.join(ROOT, "video", "run_builder.py"),
-                 "--phone-ids", ",".join(ids), "--style", style,
-                 "--quality", quality])
         n = len(ids)
-    con = db.connect()
-    con.execute(
-        "INSERT INTO videos (title, status, style, created_at) VALUES (?, 'queued', ?, ?)",
-        (f"selection ({n} phones)", style, db.now()))
-    con.commit()
+        con = db.connect()
+        cur = con.execute(
+            "INSERT INTO videos (title, status, style, created_at) VALUES (?, 'queued', ?, ?)",
+            (f"selection ({n} phones)", style, db.now()))
+        vid = cur.lastrowid
+        con.commit()
+        _launch([os.path.join(ROOT, "video", "run_builder.py"),
+                 "--phone-ids", ",".join(ids), "--video-id", str(vid),
+                 "--style", style, "--quality", quality])
     return jsonify({"ok": True})
 
 

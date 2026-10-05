@@ -4,6 +4,11 @@ See docs/reference-style.md
 """
 import os
 import subprocess
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+except Exception:
+    pass
 
 from .spec_fields import card_data
 from .style_spec import render_card, render_intro, set_quality
