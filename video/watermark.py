@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v3"
+_CACHE_VERSION = "v6"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.78
@@ -149,6 +149,34 @@ def _detect(gray):
     return verified
 
 
+
+def _remove_box(img_bgr, gray, box):
+    """Erase verified watermark text with tight-mask Telea inpainting.
+
+    Only the exact text-stroke pixels are interpolated (from immediate
+    neighbours); everything else stays bit-identical, so texture, grain
+    and gradients are preserved like professional tools.
+    """
+    rx, ry, tw, th = box
+    h, w = gray.shape
+    x0, y0 = max(0, rx - 3), max(0, ry - 3)
+    x1, y1 = min(w, rx + tw + 3), min(h, ry + th + 3)
+    if x1 - x0 < 8 or y1 - y0 < 4:
+        return False
+    patch = gray[y0:y1, x0:x1].astype(np.float32)
+    bg_med = cv2.medianBlur(gray[y0:y1, x0:x1], 15).astype(np.float32)
+    # tight stroke mask: no dilation, so only text pixels are touched.
+    # Low threshold (6) because the box is already verified to contain the
+    # watermark - this catches faint anti-aliased stroke edges too.
+    strokes = (cv2.absdiff(patch, bg_med) > 6).astype(np.uint8)
+    if strokes.sum() < 20:
+        return False
+    mask = np.zeros((h, w), np.uint8)
+    mask[y0:y1, x0:x1] = strokes * 255
+    img_bgr[:] = cv2.inpaint(img_bgr, mask, 2, cv2.INPAINT_TELEA)
+    return True
+
+
 def clean_watermark(src_path):
     """Remove GSMArena watermark stamps from an image.
 
@@ -178,21 +206,16 @@ def clean_watermark(src_path):
         verified = _detect(gray)
         if not verified:
             return src_path
-        h, w = gray.shape
-        mask = np.zeros((h, w), np.uint8)
-        for (rx, ry, tw, th), (img_st, (x0, y0)) in verified:
-            # tight mask from verified strokes; fall back to a shrunk box
-            # when strokes are too sparse (very faint stamp)
-            if img_st.sum() > 20:
-                mask[y0:y0 + img_st.shape[0], x0:x0 + img_st.shape[1]] = \
-                    np.maximum(mask[y0:y0 + img_st.shape[0],
-                                    x0:x0 + img_st.shape[1]], img_st * 255)
-            else:
-                ix0, iy0 = rx + tw // 5, ry + th // 4
-                ix1, iy1 = rx + tw * 4 // 5, ry + th * 3 // 4
-                mask[iy0:iy1, ix0:ix1] = 255
-        cleaned = cv2.inpaint(img, mask, 3, cv2.INPAINT_NS)
-        cv2.imwrite(dst, cleaned)
+        done = False
+        for (box, _stroke_info) in verified[:_MAX_BOXES]:
+            try:
+                if _remove_box(img, gray, box):
+                    done = True
+            except Exception:
+                continue
+        if not done:
+            return src_path
+        cv2.imwrite(dst, img)
         return dst
     except Exception:
         return src_path
