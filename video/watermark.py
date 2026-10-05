@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v11"
+_CACHE_VERSION = "v12"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.78
@@ -209,7 +209,14 @@ def _remove_box_lama(img_bgr, box):
     # LaMa may pad output; resize back to crop size
     if result_bgr.shape[:2] != (y1 - y0, x1 - x0):
         result_bgr = cv2.resize(result_bgr, (x1 - x0, y1 - y0))
-    img_bgr[y0:y1, x0:x1] = result_bgr
+    # Only replace the masked (text) pixels; keep original elsewhere.
+    # Feather the blend at edges for a seamless, shift-free result.
+    m = (mask.astype(np.float32) / 255.0)
+    m = cv2.GaussianBlur(m, (5, 5), 0)
+    m3 = np.stack([m] * 3, axis=2)
+    orig_crop = img_bgr[y0:y1, x0:x1].astype(np.float32)
+    blended = orig_crop * (1 - m3) + result_bgr.astype(np.float32) * m3
+    img_bgr[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
     return True
 
 
