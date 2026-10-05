@@ -22,6 +22,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scraper import db  # noqa: E402
 
 app = Flask(__name__)
+
+# watermark-removal availability (shown as a badge in the UI so a missing
+# opencv install can never silently disable cleaning)
+try:
+    from video.watermark import cv2_available as _wm_cv2
+    WM_OK = _wm_cv2()
+except Exception:
+    WM_OK = False
+if not WM_OK:
+    print("[dashboard] WARNING: opencv not installed - watermark removal "
+          "DISABLED in video builds. Run: pip install opencv-python-headless")
+
+
+@app.context_processor
+def _inject_wm():
+    return {"wm_ok": WM_OK}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRAMES = os.path.join(ROOT, "data", "frames")
 
