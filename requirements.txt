@@ -4,3 +4,8 @@ pyyaml>=6.0
 pillow>=10.0
 rembg>=2.0
 opencv-python-headless>=4.8
+
+# v10: LaMa AI watermark removal (professional quality, optional)
+# Install with: pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Then: pip install simple-lama-inpainting
+# Falls back to OpenCV Telea if not installed.

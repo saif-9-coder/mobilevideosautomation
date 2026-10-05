@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v9"
+_CACHE_VERSION = "v10"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.78
@@ -150,7 +150,62 @@ def _detect(gray):
 
 
 
+
+# LaMa AI inpainting (professional quality). Loaded lazily.
+_LAMA = None
+def _get_lama():
+    global _LAMA
+    if _LAMA is None:
+        try:
+            from simple_lama_inpainting import SimpleLama
+            _LAMA = SimpleLama()
+        except Exception:
+            _LAMA = False
+    return _LAMA if _LAMA is not False else None
+
+def _remove_box_lama(img_bgr, box):
+    """Remove watermark using LaMa AI inpainting (v10).
+
+    Runs LaMa on a tight crop around the watermark for speed,
+    then pastes the cleaned crop back. Falls back to None if
+    LaMa is not available.
+    """
+    lama = _get_lama()
+    if lama is None:
+        return False
+    rx, ry, tw, th = box
+    h, w = img_bgr.shape[:2]
+    # Crop with padding for context (LaMa needs surrounding area)
+    pad = 40
+    x0, y0 = max(0, rx - pad), max(0, ry - pad)
+    x1, y1 = min(w, rx + tw + pad), min(h, ry + th + pad)
+    crop_bgr = img_bgr[y0:y1, x0:x1]
+    ch, cw = crop_bgr.shape[:2]
+    # Mask for the watermark box within the crop
+    mask = np.zeros((ch, cw), dtype=np.uint8)
+    mask[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 255
+    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+                      iterations=2)
+    # LaMa expects RGB
+    crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+    try:
+        result_pil = lama(crop_rgb, mask)
+    except Exception:
+        return False
+    result_rgb = np.array(result_pil)
+    result_bgr = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+    # LaMa may pad output; resize back to crop size
+    if result_bgr.shape[:2] != (y1 - y0, x1 - x0):
+        result_bgr = cv2.resize(result_bgr, (x1 - x0, y1 - y0))
+    img_bgr[y0:y1, x0:x1] = result_bgr
+    return True
+
+
 def _remove_box(img_bgr, gray, box):
+    # v10: Try LaMa AI first (professional quality)
+    if _remove_box_lama(img_bgr, box):
+        return True
+    # Fallback to Telea inpainting
     """Erase verified watermark text with tight-mask Telea inpainting.
 
     Only the exact text-stroke pixels are interpolated (from immediate
