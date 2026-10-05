@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v12"
+_CACHE_VERSION = "v13"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.78
@@ -163,6 +163,40 @@ def _get_lama():
             _LAMA = False
     return _LAMA if _LAMA is not False else None
 
+
+def _remove_box_minimal(img_bgr, gray, box):
+    """v13: Ultra-minimal text removal.
+
+    Only the most confident text-stroke pixels are touched (high threshold,
+    no dilation). Each is filled with the median of nearby non-text pixels.
+    No AI generation, no inpainting - the original image is otherwise
+    bit-identical.
+    """
+    rx, ry, tw, th = box
+    h, w = gray.shape
+    x0, y0 = max(0, rx - 5), max(0, ry - 5)
+    x1, y1 = min(w, rx + tw + 5), min(h, ry + th + 5)
+    patch = gray[y0:y1, x0:x1].astype(np.float32)
+    bg_med = cv2.medianBlur(gray[y0:y1, x0:x1], 21).astype(np.float32)
+    # Strict: only confident text pixels (high threshold, NO dilation)
+    strokes = (cv2.absdiff(patch, bg_med) > 12).astype(np.uint8)
+    # Restrict to verified box
+    bm = np.zeros_like(strokes); bm[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 1
+    strokes = strokes * bm
+    n = int(strokes.sum())
+    if n < 10:
+        return False
+    # Fill each stroke pixel with median of nearby non-stroke pixels
+    region = img_bgr[y0:y1, x0:x1].copy()
+    sm = strokes.astype(bool)
+    # Background estimate: median-blurred version (text-free)
+    bg_est = cv2.medianBlur(img_bgr[y0:y1, x0:x1], 15)
+    m3 = np.stack([sm] * 3, axis=2)
+    region[m3] = bg_est[m3]
+    img_bgr[y0:y1, x0:x1] = region
+    return True
+
+
 def _remove_box_lama(img_bgr, box):
     """Remove watermark using LaMa AI inpainting (v10).
 
@@ -221,7 +255,10 @@ def _remove_box_lama(img_bgr, box):
 
 
 def _remove_box(img_bgr, gray, box):
-    # v10: Try LaMa AI first (professional quality)
+    # v13: Ultra-minimal first (Saif: don't touch original)
+    if _remove_box_minimal(img_bgr, gray, box):
+        return True
+    # v10: Try LaMa AI (professional quality)
     if _remove_box_lama(img_bgr, box):
         return True
     # Fallback to Telea inpainting
