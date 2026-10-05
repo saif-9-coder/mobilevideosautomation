@@ -107,7 +107,17 @@ def prepare_images(phone, max_n=3):
         src = _resolve_src(src)
         if not src:
             continue
-        dst = os.path.join(WORK_DIR, f"phone_{phone['id']}_{pos}_cut.png")
+        # strip GSMArena watermark stamps before anything else
+        try:
+            from .watermark import clean_watermark
+            src = clean_watermark(src)
+        except Exception:
+            pass
+        # hash the (possibly cleaned) src into the cutout name so stale
+        # pre-watermark-removal cutouts are regenerated, not reused
+        import hashlib as _hl
+        _sh = _hl.md5(src.encode()).hexdigest()[:8]
+        dst = os.path.join(WORK_DIR, f"phone_{phone['id']}_{pos}_{_sh}_cut.png")
         if not os.path.exists(dst):
             model_cached = os.path.exists(os.path.expanduser("~/.u2net/u2net.onnx"))
             done = False
