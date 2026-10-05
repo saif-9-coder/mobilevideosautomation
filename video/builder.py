@@ -82,13 +82,25 @@ def prepare_image(phone):
     return imgs[0] if imgs else None
 
 
+def _resolve_src(src):
+    """Portable image resolution: absolute path first, then basename in data/images."""
+    if src and os.path.exists(src):
+        return src
+    if src:
+        cand = os.path.join(ROOT, "data", "images", os.path.basename(src))
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
 def prepare_images(phone, max_n=3):
     """Return list of background-removed PNG paths (all angles)."""
     os.makedirs(WORK_DIR, exist_ok=True)
     srcs = phone.get("images") or ([phone.get("local_image")] if phone.get("local_image") else [])
     out_paths = []
     for pos, src in enumerate(srcs[:max_n]):
-        if not src or not os.path.exists(src):
+        src = _resolve_src(src)
+        if not src:
             continue
         dst = os.path.join(WORK_DIR, f"phone_{phone['id']}_{pos}_cut.png")
         if not os.path.exists(dst):

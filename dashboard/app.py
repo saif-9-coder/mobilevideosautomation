@@ -114,12 +114,29 @@ def manage():
 
 
 # ---------------- phone assets ----------------
+DATA_IMG = os.path.join(ROOT, "data", "images")
+
+
+def _resolve_img(stored):
+    """Resolve an image path portably: absolute path first, then basename in
+    the local data/images dir (DBs copied from another machine store foreign
+    absolute paths)."""
+    if stored and os.path.exists(stored):
+        return stored
+    if stored:
+        cand = os.path.join(DATA_IMG, os.path.basename(stored))
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
 @app.route("/img/<int:phone_id>")
 def phone_img(phone_id):
     con = db.connect()
     p = con.execute("SELECT local_image FROM phones WHERE id=?", (phone_id,)).fetchone()
-    if p and p["local_image"] and os.path.exists(p["local_image"]):
-        return send_file(p["local_image"])
+    path = _resolve_img(p["local_image"]) if p else None
+    if path:
+        return send_file(path)
     return ("not found", 404)
 
 
@@ -129,8 +146,9 @@ def phone_img_pos(phone_id, pos):
     r = con.execute(
         "SELECT local_path FROM phone_images WHERE phone_id=? AND position=?",
         (phone_id, pos)).fetchone()
-    if r and r["local_path"] and os.path.exists(r["local_path"]):
-        return send_file(r["local_path"])
+    path = _resolve_img(r["local_path"]) if r else None
+    if path:
+        return send_file(path)
     return ("not found", 404)
 
 
