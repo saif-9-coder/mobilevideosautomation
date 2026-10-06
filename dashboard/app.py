@@ -467,27 +467,67 @@ def api_eraser():
                 filled = img.copy()
                 filled[sm > 0] = med
             else:
-                # Try LaMa AI first (Canva-like quality) if available
+                # Direction-aware interpolation: for tall (vertical) masks,
+                # interpolate horizontally row-by-row (preserves vertical edges);
+                # for wide (horizontal) masks, interpolate vertically.
                 filled = None
-                try:
-                    from simple_lama_inpainting import SimpleLama
-                    from PIL import Image
-                    lama = SimpleLama()
-                    pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                    pil_m = Image.fromarray(sm)
-                    mw, mh = pil_img.size
-                    sc = min(1.0, 1024 / max(mw, mh))
-                    if sc < 1.0:
-                        rs = lama(pil_img.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS),
-                                  pil_m.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS))
-                        res = rs.resize((mw, mh), Image.LANCZOS)
-                    else:
-                        res = lama(pil_img, pil_m)
-                    filled = cv2.cvtColor(np.array(res), cv2.COLOR_RGB2BGR)
-                except Exception:
-                    filled = None
+                ys, xs = np.where(sm > 0)
+                if len(xs) > 20:
+                    bw = int(xs.max() - xs.min()) + 1
+                    bh = int(ys.max() - ys.min()) + 1
+                    try:
+                        interp = img.copy()
+                        if bh > bw * 1.5:
+                            # Vertical: horizontal interpolation per row
+                            for y in range(int(ys.min()), int(ys.max()) + 1):
+                                row_m = np.where(sm[y] > 0)[0]
+                                if len(row_m) == 0:
+                                    continue
+                                xl, xr = int(row_m.min()), int(row_m.max())
+                                cl = img[y, max(0, xl - 3)] if xl > 0 else img[y, xr + 3]
+                                cr = img[y, min(w - 1, xr + 3)] if xr < w - 1 else img[y, xl - 3]
+                                n = xr - xl + 1
+                                for i, xx in enumerate(range(xl, xr + 1)):
+                                    t = i / max(1, n - 1)
+                                    interp[y, xx] = (cl * (1 - t) + cr * t).astype(np.uint8)
+                            filled = interp
+                        elif bw > bh * 1.5:
+                            # Horizontal: vertical interpolation per column
+                            for x in range(int(xs.min()), int(xs.max()) + 1):
+                                col_m = np.where(sm[:, x] > 0)[0]
+                                if len(col_m) == 0:
+                                    continue
+                                yt, yb = int(col_m.min()), int(col_m.max())
+                                ct = img[max(0, yt - 3), x] if yt > 0 else img[yb + 3, x]
+                                cb = img[min(h - 1, yb + 3), x] if yb < h - 1 else img[yt - 3, x]
+                                n = yb - yt + 1
+                                for i, yy in enumerate(range(yt, yb + 1)):
+                                    t = i / max(1, n - 1)
+                                    interp[yy, x] = (ct * (1 - t) + cb * t).astype(np.uint8)
+                            filled = interp
+                    except Exception:
+                        filled = None
                 if filled is None:
-                    filled = cv2.inpaint(img, sm, 4, cv2.INPAINT_NS)
+                    # Try LaMa AI first (Canva-like quality) if available
+                    try:
+                        from simple_lama_inpainting import SimpleLama
+                        from PIL import Image
+                        lama = SimpleLama()
+                        pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                        pil_m = Image.fromarray(sm)
+                        mw, mh = pil_img.size
+                        sc = min(1.0, 1024 / max(mw, mh))
+                        if sc < 1.0:
+                            rs = lama(pil_img.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS),
+                                      pil_m.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS))
+                            res = rs.resize((mw, mh), Image.LANCZOS)
+                        else:
+                            res = lama(pil_img, pil_m)
+                        filled = cv2.cvtColor(np.array(res), cv2.COLOR_RGB2BGR)
+                    except Exception:
+                        filled = None
+                    if filled is None:
+                        filled = cv2.inpaint(img, sm, 4, cv2.INPAINT_NS)
             mf = cv2.GaussianBlur(sm.astype(np.float32) / 255.0, (3, 3), 0)
         else:
             # Object: whole brush, gentle edge, Navier-Stokes inpaint
