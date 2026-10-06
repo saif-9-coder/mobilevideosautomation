@@ -371,12 +371,16 @@ def _remove_box_v14(img_bgr, gray, box):
     return False
 
 
-def _remove_box_lama(img_bgr, box):
+def _remove_box_lama(img_bgr, box, aggressive=False):
     """Remove watermark using LaMa AI inpainting (v10).
 
     Runs LaMa on a tight crop around the watermark for speed,
     then pastes the cleaned crop back. Falls back to None if
     LaMa is not available.
+
+    aggressive=True: for bottom-edge boxes where watermarks live.
+    Uses looser thresholds to catch faint text. Still safe because
+    the box is at the edge, not the middle of the phone.
     """
     lama = _get_lama()
     if lama is None:
@@ -396,20 +400,24 @@ def _remove_box_lama(img_bgr, box):
     # high-contrast. Use a high threshold so we only catch real text,
     # not image texture. If the "strokes" cover too much of the box,
     # it's a false positive — skip rather than damage.
+    # aggressive=True (bottom edge): looser thresholds for faint text.
+    contrast_thr = 10 if aggressive else 15
+    bright_thr = 100 if aggressive else 140
+    coverage_limit = 0.40 if aggressive else 0.25
     crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
     bg_med = cv2.medianBlur(crop_gray, 21)
     strokes = (cv2.absdiff(crop_gray.astype(np.float32),
-                           bg_med.astype(np.float32)) > 15).astype(np.uint8)
+                           bg_med.astype(np.float32)) > contrast_thr).astype(np.uint8)
     # Text is bright: keep only bright strokes
-    bright = (crop_gray > 140).astype(np.uint8)
+    bright = (crop_gray > bright_thr).astype(np.uint8)
     strokes = strokes * bright
     # Restrict to the verified box area
     box_mask = np.zeros((ch, cw), dtype=np.uint8)
     box_mask[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 1
     strokes = strokes * box_mask
-    # Safety: if strokes cover >25% of box area, it's texture not text
+    # Safety: if strokes cover too much of box area, it's texture not text
     box_area = tw * th
-    if box_area > 0 and float(strokes.sum()) / box_area > 0.25:
+    if box_area > 0 and float(strokes.sum()) / box_area > coverage_limit:
         return False
     strokes = cv2.dilate(strokes,
                          cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
@@ -628,7 +636,7 @@ def clean_cutout_watermark(cutout_path):
                         full_mask = np.zeros((h, w), np.uint8)
                         full_mask[ry:ry+th, rx:rx+tw] = m
                         # LaMa first for cutouts too (best quality)
-                        if not _remove_box_lama(bgr, (rx, ry, tw, th)):
+                        if not _remove_box_lama(bgr, (rx, ry, tw, th), aggressive=True):
                             bgr[:] = cv2.inpaint(bgr, full_mask, 3, cv2.INPAINT_TELEA)
                         done = True
                         fallback_done = True
