@@ -99,7 +99,12 @@ def _resolve_src(src):
 
 
 def prepare_images(phone, max_n=3):
-    """Return list of background-removed PNG paths (all angles)."""
+    """Return list of background-removed PNG paths (all angles).
+
+    Order (as Saif requested): background removal FIRST, then the phone
+    cutout goes through LaMa watermark cleaning (same method as the manual
+    eraser tool). This happens before video generation.
+    """
     os.makedirs(WORK_DIR, exist_ok=True)
     srcs = phone.get("images") or ([phone.get("local_image")] if phone.get("local_image") else [])
     out_paths = []
@@ -107,14 +112,7 @@ def prepare_images(phone, max_n=3):
         src = _resolve_src(src)
         if not src:
             continue
-        # strip GSMArena watermark stamps before anything else
-        try:
-            from .watermark import clean_watermark
-            src = clean_watermark(src)
-        except Exception:
-            pass
-        # hash the (possibly cleaned) src into the cutout name so stale
-        # pre-watermark-removal cutouts are regenerated, not reused
+        # hash the src into the cutout name so stale cutouts are regenerated
         import hashlib as _hl
         _sh = _hl.md5(src.encode()).hexdigest()[:8]
         dst = os.path.join(WORK_DIR, f"phone_{phone['id']}_{pos}_{_sh}_cut.png")
@@ -137,6 +135,13 @@ def prepare_images(phone, max_n=3):
                     pass
             if not done:
                 dst = src
+        # Watermark cleaning AFTER background removal: the cutout goes
+        # through LaMa (same as manual tool) before video generation.
+        try:
+            from .watermark import clean_cutout_watermark
+            dst = clean_cutout_watermark(dst)
+        except Exception:
+            pass
         out_paths.append(dst)
     return out_paths
 

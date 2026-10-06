@@ -559,3 +559,104 @@ def clean_watermark(src_path):
         return dst
     except Exception:
         return src_path
+
+
+def clean_cutout_watermark(cutout_path):
+    """Remove GSMArena watermarks from a background-removed cutout (RGBA).
+
+    Runs AFTER background removal (as Saif requested): the phone cutout goes
+    through the same LaMa cleaning used in the manual tool. Alpha channel is
+    preserved bit-identical; only RGB text pixels are inpainted.
+
+    Returns the path of the cleaned cutout (cached). Returns the original
+    path unchanged when no watermark is detected or anything fails.
+    """
+    if not _CV2:
+        return cutout_path
+    try:
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        key = hashlib.md5(os.path.abspath(cutout_path).encode()).hexdigest()
+        dst = os.path.join(_CACHE_DIR, f"{key}_{_CACHE_VERSION}_cut.png")
+        if os.path.exists(dst) and \
+                os.path.getmtime(dst) >= os.path.getmtime(cutout_path):
+            return dst
+        # Read with alpha
+        img_rgba = cv2.imread(cutout_path, cv2.IMREAD_UNCHANGED)
+        if img_rgba is None:
+            return cutout_path
+        if len(img_rgba.shape) == 2 or img_rgba.shape[2] < 4:
+            # No alpha: fall back to standard cleaning
+            return clean_watermark(cutout_path)
+        bgr = img_rgba[:, :, :3]
+        alpha = img_rgba[:, :, 3]
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+        # Same detection as clean_watermark: template + bottom-edge fallback
+        verified = _detect(gray)
+        try:
+            fb = [(b, None) for b in _detect_bottom_edge(gray)]
+            verified = fb + verified
+        except Exception:
+            pass
+        if not verified:
+            return cutout_path
+
+        done = False
+        fallback_done = False
+        for (box, stroke_info) in verified[:_MAX_BOXES + 3]:
+            try:
+                if stroke_info is None:
+                    rx, ry, tw, th = box
+                    if th > tw * 1.5:
+                        continue
+                    h, w = gray.shape
+                    patch = gray[ry:ry+th, rx:rx+tw].astype(np.float32)
+                    bg = cv2.medianBlur(gray[ry:ry+th, rx:rx+tw], 15).astype(np.float32)
+                    m = (cv2.absdiff(patch, bg) > 10).astype(np.uint8) * 255
+                    if int((m > 0).sum()) >= 10:
+                        full_mask = np.zeros((h, w), np.uint8)
+                        full_mask[ry:ry+th, rx:rx+tw] = m
+                        # LaMa first for cutouts too (best quality)
+                        if not _remove_box_lama(bgr, (rx, ry, tw, th)):
+                            bgr[:] = cv2.inpaint(bgr, full_mask, 3, cv2.INPAINT_TELEA)
+                        done = True
+                        fallback_done = True
+                elif not fallback_done and _remove_box(bgr, gray, box):
+                    done = True
+            except Exception:
+                continue
+        if not done:
+            return cutout_path
+        # Recombine with original alpha (bit-identical)
+        out_rgba = np.dstack([bgr, alpha])
+        cv2.imwrite(dst, out_rgba)
+
+        # Auto-checker (Saif's idea): verify the watermark is actually gone.
+        # Re-run detection on the cleaned image; if text remains, do one
+        # more pass with the same method. Max 2 passes to avoid damage.
+        try:
+            check_gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            remaining = _detect(check_gray)
+            try:
+                fb2 = [(b, None) for b in _detect_bottom_edge(check_gray)]
+                remaining = fb2 + remaining
+            except Exception:
+                pass
+            if remaining:
+                # One more pass on remaining boxes
+                for (box, stroke_info) in remaining[:_MAX_BOXES]:
+                    try:
+                        if stroke_info is None:
+                            rx, ry, tw, th = box
+                            if th > tw * 1.5:
+                                continue
+                        _remove_box(bgr, check_gray, box)
+                    except Exception:
+                        continue
+                out_rgba = np.dstack([bgr, alpha])
+                cv2.imwrite(dst, out_rgba)
+        except Exception:
+            pass
+        return dst
+    except Exception:
+        return cutout_path
