@@ -400,6 +400,47 @@ def eraser_page():
     return render_template("eraser.html")
 
 
+@app.route("/api/eraser/ai-status")
+def eraser_ai_status():
+    """Check if LaMa AI is available for best quality."""
+    try:
+        from simple_lama_inpainting import SimpleLama
+        return jsonify({"ok": True, "ai": True})
+    except ImportError:
+        return jsonify({"ok": True, "ai": False})
+
+
+_ai_installing = False
+
+@app.route("/api/eraser/install-ai", methods=["POST"])
+def eraser_install_ai():
+    """One-click LaMa AI install (2GB, one-time). Runs in background."""
+    global _ai_installing
+    if _ai_installing:
+        return jsonify({"ok": True, "status": "installing"})
+    try:
+        from simple_lama_inpainting import SimpleLama
+        return jsonify({"ok": True, "status": "ready"})
+    except ImportError:
+        pass
+    _ai_installing = True
+    import subprocess, sys, threading
+    def _install():
+        global _ai_installing
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "torch",
+                          "--index-url", "https://download.pytorch.org/whl/cpu",
+                          "-q", "--break-system-packages"],
+                         timeout=1800, capture_output=True)
+            subprocess.run([sys.executable, "-m", "pip", "install",
+                          "simple-lama-inpainting", "-q", "--break-system-packages",
+                          "--no-deps"], timeout=600, capture_output=True)
+        finally:
+            _ai_installing = False
+    threading.Thread(target=_install, daemon=True).start()
+    return jsonify({"ok": True, "status": "installing"})
+
+
 @app.route("/api/eraser", methods=["POST"])
 def api_eraser():
     """Smart Magic Eraser (Canva-style).
@@ -444,6 +485,10 @@ def api_eraser():
                                   cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)),
                                   iterations=1)
         strokes = ((dev > 14).astype(np.uint8)) * brush
+        # Filter: text is BRIGHT (white), edges are medium gray.
+        # Keep only bright strokes to avoid damaging phone edges.
+        bright = (gray > 140).astype(np.uint8)
+        strokes = strokes * bright
         strokes = cv2.morphologyEx(strokes, cv2.MORPH_OPEN,
                                    cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)))
         stroke_frac = float(strokes.sum()) / max(1, int(brush.sum()))
@@ -467,44 +512,49 @@ def api_eraser():
                 filled = img.copy()
                 filled[sm > 0] = med
             else:
-                # Direction-aware interpolation: for tall (vertical) masks,
-                # interpolate horizontally row-by-row (preserves vertical edges);
-                # for wide (horizontal) masks, interpolate vertically.
+                # Structure-aware fill: copy from nearest unmasked pixel
+                # along the structure direction (preserves texture, no blur).
+                # For tall (vertical) masks: nearest in same row.
+                # For wide (horizontal) masks: nearest in same column.
                 filled = None
                 ys, xs = np.where(sm > 0)
                 if len(xs) > 20:
                     bw = int(xs.max() - xs.min()) + 1
                     bh = int(ys.max() - ys.min()) + 1
                     try:
-                        interp = img.copy()
+                        res = img.copy()
+                        sm_bin = (sm > 0)
                         if bh > bw * 1.5:
-                            # Vertical: horizontal interpolation per row
+                            # Vertical: row-wise nearest neighbor
                             for y in range(int(ys.min()), int(ys.max()) + 1):
-                                row_m = np.where(sm[y] > 0)[0]
-                                if len(row_m) == 0:
+                                row_m = sm_bin[y]
+                                if not row_m.any():
                                     continue
-                                xl, xr = int(row_m.min()), int(row_m.max())
-                                cl = img[y, max(0, xl - 3)] if xl > 0 else img[y, xr + 3]
-                                cr = img[y, min(w - 1, xr + 3)] if xr < w - 1 else img[y, xl - 3]
-                                n = xr - xl + 1
-                                for i, xx in enumerate(range(xl, xr + 1)):
-                                    t = i / max(1, n - 1)
-                                    interp[y, xx] = (cl * (1 - t) + cr * t).astype(np.uint8)
-                            filled = interp
+                                unmasked = np.where(~row_m)[0]
+                                masked = np.where(row_m)[0]
+                                if len(unmasked) == 0:
+                                    continue
+                                # For each masked pixel, find nearest unmasked
+                                for xx in masked:
+                                    d = np.abs(unmasked - xx)
+                                    nearest = unmasked[np.argmin(d)]
+                                    res[y, xx] = img[y, nearest]
+                            filled = res
                         elif bw > bh * 1.5:
-                            # Horizontal: vertical interpolation per column
+                            # Horizontal: column-wise nearest neighbor
                             for x in range(int(xs.min()), int(xs.max()) + 1):
-                                col_m = np.where(sm[:, x] > 0)[0]
-                                if len(col_m) == 0:
+                                col_m = sm_bin[:, x]
+                                if not col_m.any():
                                     continue
-                                yt, yb = int(col_m.min()), int(col_m.max())
-                                ct = img[max(0, yt - 3), x] if yt > 0 else img[yb + 3, x]
-                                cb = img[min(h - 1, yb + 3), x] if yb < h - 1 else img[yt - 3, x]
-                                n = yb - yt + 1
-                                for i, yy in enumerate(range(yt, yb + 1)):
-                                    t = i / max(1, n - 1)
-                                    interp[yy, x] = (ct * (1 - t) + cb * t).astype(np.uint8)
-                            filled = interp
+                                unmasked = np.where(~col_m)[0]
+                                masked = np.where(col_m)[0]
+                                if len(unmasked) == 0:
+                                    continue
+                                for yy in masked:
+                                    d = np.abs(unmasked - yy)
+                                    nearest = unmasked[np.argmin(d)]
+                                    res[yy, x] = img[nearest, x]
+                            filled = res
                     except Exception:
                         filled = None
                 if filled is None:

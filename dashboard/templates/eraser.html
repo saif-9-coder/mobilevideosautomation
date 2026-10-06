@@ -54,6 +54,8 @@
   <button class="btn secondary" id="undoBtn" onclick="clearMask()">Clear</button>
   <button class="btn secondary" id="toggleBtn" onclick="toggleMask()" style="display:none">Show mask</button>
   <button class="btn" id="eraseBtn" onclick="doErase()" disabled>✨ Erase</button>
+  <span id="aiBadge" style="font-size:12px;color:#888"></span>
+  <button class="btn secondary" id="aiBtn" onclick="installAI()" style="display:none;font-size:12px;padding:8px 16px">🤖 Enable AI Mode</button>
 </div>
 
 <div id="status">Upload an image or pick one below, then brush over what you want to remove.</div>
@@ -194,6 +196,49 @@ function toggleMask() {
 }
 
 function setStatus(html) { document.getElementById('status').innerHTML = html; }
+
+// Check AI status on load
+(async function checkAI() {
+  try {
+    const r = await fetch('/api/eraser/ai-status');
+    const d = await r.json();
+    const badge = document.getElementById('aiBadge');
+    const btn = document.getElementById('aiBtn');
+    if (d.ai) {
+      badge.textContent = '🤖 AI Mode ON (best quality)';
+      badge.style.color = '#7dffa8';
+      btn.style.display = 'none';
+    } else {
+      badge.textContent = 'Standard mode';
+      btn.style.display = 'inline-block';
+    }
+  } catch(e) {}
+})();
+
+async function installAI() {
+  const btn = document.getElementById('aiBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Installing AI… (2GB, one-time)';
+  setStatus('<span class="spinner"></span>Installing AI eraser… this takes a few minutes, one-time only. You can keep using standard mode meanwhile.');
+  try {
+    await fetch('/api/eraser/install-ai', {method: 'POST'});
+    // Poll for completion
+    const poll = setInterval(async () => {
+      const r = await fetch('/api/eraser/ai-status');
+      const d = await r.json();
+      if (d.ai) {
+        clearInterval(poll);
+        document.getElementById('aiBadge').textContent = '🤖 AI Mode ON (best quality)';
+        document.getElementById('aiBadge').style.color = '#7dffa8';
+        btn.style.display = 'none';
+        setStatus('✅ AI Mode ready! Erases will now be Canva-quality.');
+      }
+    }, 15000);
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = '🤖 Enable AI Mode';
+  }
+}
 
 async function doErase() {
   if (!hasMask || !img) return;
