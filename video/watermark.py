@@ -28,8 +28,8 @@ _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
 _CACHE_VERSION = "v40"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
-_NCC_THRESHOLD = 0.68
-_DICE_THRESHOLD = 0.15
+_NCC_THRESHOLD = 0.75  # strict: avoid false positives that cause damage
+_DICE_THRESHOLD = 0.20  # strict: verify stroke pattern matches text
 _MAX_BOXES = 4
 
 _tpl_cache = None
@@ -392,14 +392,25 @@ def _remove_box_lama(img_bgr, box):
     # Tight mask: only the actual text strokes, not the full box.
     # This keeps LaMa's regeneration minimal so surrounding pixels
     # stay pixel-identical and nothing shifts.
+    # SAFETY (Saif: never damage): watermark text is BRIGHT white and
+    # high-contrast. Use a high threshold so we only catch real text,
+    # not image texture. If the "strokes" cover too much of the box,
+    # it's a false positive — skip rather than damage.
     crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
     bg_med = cv2.medianBlur(crop_gray, 21)
     strokes = (cv2.absdiff(crop_gray.astype(np.float32),
-                           bg_med.astype(np.float32)) > 4).astype(np.uint8)
+                           bg_med.astype(np.float32)) > 15).astype(np.uint8)
+    # Text is bright: keep only bright strokes
+    bright = (crop_gray > 140).astype(np.uint8)
+    strokes = strokes * bright
     # Restrict to the verified box area
     box_mask = np.zeros((ch, cw), dtype=np.uint8)
     box_mask[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 1
     strokes = strokes * box_mask
+    # Safety: if strokes cover >25% of box area, it's texture not text
+    box_area = tw * th
+    if box_area > 0 and float(strokes.sum()) / box_area > 0.25:
+        return False
     strokes = cv2.dilate(strokes,
                          cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
                          iterations=1)
@@ -630,33 +641,6 @@ def clean_cutout_watermark(cutout_path):
         # Recombine with original alpha (bit-identical)
         out_rgba = np.dstack([bgr, alpha])
         cv2.imwrite(dst, out_rgba)
-
-        # Auto-checker (Saif's idea): verify the watermark is actually gone.
-        # Re-run detection on the cleaned image; if text remains, do one
-        # more pass with the same method. Max 2 passes to avoid damage.
-        try:
-            check_gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-            remaining = _detect(check_gray)
-            try:
-                fb2 = [(b, None) for b in _detect_bottom_edge(check_gray)]
-                remaining = fb2 + remaining
-            except Exception:
-                pass
-            if remaining:
-                # One more pass on remaining boxes
-                for (box, stroke_info) in remaining[:_MAX_BOXES]:
-                    try:
-                        if stroke_info is None:
-                            rx, ry, tw, th = box
-                            if th > tw * 1.5:
-                                continue
-                        _remove_box(bgr, check_gray, box)
-                    except Exception:
-                        continue
-                out_rgba = np.dstack([bgr, alpha])
-                cv2.imwrite(dst, out_rgba)
-        except Exception:
-            pass
         return dst
     except Exception:
         return cutout_path
