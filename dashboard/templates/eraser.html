@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Magic Eraser — MotoPhone Studio</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+  header { background: #16213e; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #0f3460; }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header h1 span { color: #e94560; }
+  header a { color: #aaa; text-decoration: none; font-size: 14px; }
+  header a:hover { color: #fff; }
+  .toolbar { background: #16213e; padding: 12px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; border-bottom: 1px solid #0f3460; }
+  .toolbar label { font-size: 13px; color: #aaa; }
+  .toolbar input[type=range] { width: 150px; accent-color: #e94560; }
+  #brushSizeVal { font-size: 13px; color: #fff; min-width: 40px; }
+  .btn { background: #e94560; color: #fff; border: none; padding: 10px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+  .btn:hover { background: #c73650; }
+  .btn:disabled { background: #555; cursor: not-allowed; }
+  .btn.secondary { background: #0f3460; }
+  .btn.secondary:hover { background: #1a4a8a; }
+  .main { display: flex; gap: 20px; padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  .canvas-wrap { flex: 1; background: #0f0f1e; border-radius: 12px; padding: 16px; position: relative; min-height: 500px; display: flex; align-items: center; justify-content: center; }
+  #canvas { max-width: 100%; max-height: 70vh; border-radius: 8px; cursor: crosshair; touch-action: none; }
+  .side { width: 300px; background: #16213e; border-radius: 12px; padding: 20px; }
+  .side h3 { font-size: 15px; margin-bottom: 12px; color: #fff; }
+  .side p { font-size: 13px; color: #aaa; line-height: 1.6; margin-bottom: 16px; }
+  .side .step { display: flex; gap: 10px; margin-bottom: 12px; font-size: 13px; color: #ccc; }
+  .side .step .num { background: #e94560; color: #fff; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+  #uploadInput { display: none; }
+  .upload-btn { display: block; width: 100%; text-align: center; background: #0f3460; color: #fff; padding: 12px; border-radius: 8px; cursor: pointer; font-size: 14px; margin-bottom: 12px; border: 2px dashed #2a5a9a; }
+  .upload-btn:hover { background: #1a4a8a; }
+  .compare-wrap { display: none; margin-top: 16px; }
+  .compare-wrap img { width: 100%; border-radius: 8px; margin-bottom: 8px; }
+  .compare-label { font-size: 12px; color: #888; text-align: center; margin-bottom: 8px; }
+  #status { text-align: center; padding: 12px; font-size: 14px; color: #aaa; min-height: 40px; }
+  #status .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #555; border-top-color: #e94560; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .brush-preview { position: fixed; border: 2px solid #e94560; border-radius: 50%; pointer-events: none; display: none; z-index: 1000; background: rgba(233,69,96,0.15); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🪄 Magic <span>Eraser</span></h1>
+  <a href="/">← Back to Studio</a>
+</header>
+
+<div class="toolbar">
+  <label>Brush size:</label>
+  <input type="range" id="brushSize" min="5" max="100" value="30">
+  <span id="brushSizeVal">30px</span>
+  <button class="btn secondary" id="undoBtn" onclick="clearMask()">Clear</button>
+  <button class="btn secondary" id="toggleBtn" onclick="toggleMask()" style="display:none">Show mask</button>
+  <button class="btn" id="eraseBtn" onclick="doErase()" disabled>✨ Erase</button>
+</div>
+
+<div id="status">Upload an image or pick one below, then brush over what you want to remove.</div>
+
+<div class="main">
+  <div class="canvas-wrap">
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="side">
+    <h3>How it works</h3>
+    <div class="step"><div class="num">1</div><div>Upload an image (or choose from your scraped phones)</div></div>
+    <div class="step"><div class="num">2</div><div>Brush over the watermark or object to remove</div></div>
+    <div class="step"><div class="num">3</div><div>Hit <b>Erase</b> — AI fills it in seamlessly</div></div>
+    <div class="step"><div class="num">4</div><div>Download the clean image</div></div>
+    <label class="upload-btn" for="uploadInput">📤 Upload image</label>
+    <input type="file" id="uploadInput" accept="image/*">
+    <p style="margin-top:12px">Tip: use a brush slightly larger than the text. Small strokes work best.</p>
+    <div class="compare-wrap" id="compareWrap">
+      <div class="compare-label">BEFORE</div>
+      <img id="beforeImg">
+      <div class="compare-label">AFTER</div>
+      <img id="resultImg">
+      <button class="btn" style="width:100%;margin-top:8px" onclick="downloadResult()">⬇ Download</button>
+    </div>
+  </div>
+</div>
+
+<div class="brush-preview" id="brushPreview"></div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const maskCanvas = document.createElement('canvas');
+const maskCtx = maskCanvas.getContext('2d');
+let img = null, drawing = false, hasMask = false, showMask = false;
+let brushSize = 30, resultDataUrl = null, origDataUrl = null;
+
+document.getElementById('brushSize').addEventListener('input', e => {
+  brushSize = +e.target.value;
+  document.getElementById('brushSizeVal').textContent = brushSize + 'px';
+});
+
+document.getElementById('uploadInput').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = ev => loadImage(ev.target.result);
+  r.readAsDataURL(f);
+});
+
+function loadImage(src) {
+  img = new Image();
+  img.onload = () => {
+    const maxW = 900, maxH = 700;
+    let w = img.width, h = img.height;
+    const s = Math.min(maxW / w, maxH / h, 1);
+    w = Math.round(w * s); h = Math.round(h * s);
+    canvas.width = w; canvas.height = h;
+    maskCanvas.width = w; maskCanvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+    maskCtx.clearRect(0, 0, w, h);
+    hasMask = false; resultDataUrl = null; origDataUrl = src;
+    document.getElementById('compareWrap').style.display = 'none';
+    document.getElementById('toggleBtn').style.display = 'none';
+    document.getElementById('eraseBtn').disabled = true;
+    setStatus('Brush over the watermark or object you want to remove.');
+  };
+  img.src = src;
+}
+
+function canvasPos(e) {
+  const r = canvas.getBoundingClientRect();
+  const cx = (e.touches ? e.touches[0].clientX : e.clientX);
+  const cy = (e.touches ? e.touches[0].clientY : e.clientY);
+  return { x: (cx - r.left) * (canvas.width / r.width), y: (cy - r.top) * (canvas.height / r.height) };
+}
+
+function paint(x, y) {
+  maskCtx.fillStyle = '#fff';
+  maskCtx.beginPath(); maskCtx.arc(x, y, brushSize / 2, 0, Math.PI * 2); maskCtx.fill();
+  // red overlay on main canvas
+  ctx.save();
+  ctx.globalAlpha = 0.45; ctx.fillStyle = '#e94560';
+  ctx.beginPath(); ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  hasMask = true;
+  document.getElementById('eraseBtn').disabled = false;
+}
+
+canvas.addEventListener('mousedown', e => { drawing = true; const p = canvasPos(e); paint(p.x, p.y); });
+canvas.addEventListener('mousemove', e => {
+  const p = canvasPos(e); moveBrushPreview(e);
+  if (drawing) paint(p.x, p.y);
+});
+canvas.addEventListener('mouseup', () => drawing = false);
+canvas.addEventListener('mouseleave', () => { drawing = false; hideBrushPreview(); });
+canvas.addEventListener('touchstart', e => { e.preventDefault(); drawing = true; const p = canvasPos(e); paint(p.x, p.y); }, {passive:false});
+canvas.addEventListener('touchmove', e => { e.preventDefault(); const p = canvasPos(e); if (drawing) paint(p.x, p.y); }, {passive:false});
+canvas.addEventListener('touchend', () => drawing = false);
+
+const bp = document.getElementById('brushPreview');
+function moveBrushPreview(e) {
+  const scale = canvas.getBoundingClientRect().width / canvas.width;
+  bp.style.display = 'block';
+  bp.style.width = bp.style.height = (brushSize * scale) + 'px';
+  bp.style.left = (e.clientX - brushSize * scale / 2) + 'px';
+  bp.style.top = (e.clientY - brushSize * scale / 2) + 'px';
+}
+function hideBrushPreview() { bp.style.display = 'none'; }
+
+function clearMask() {
+  maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (img) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  hasMask = false; showMask = false;
+  document.getElementById('eraseBtn').disabled = true;
+  document.getElementById('toggleBtn').style.display = 'none';
+  document.getElementById('toggleBtn').textContent = 'Show mask';
+  setStatus('Mask cleared. Brush again to mark areas.');
+}
+
+function toggleMask() {
+  showMask = !showMask;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (showMask) {
+    ctx.drawImage(maskCanvas, 0, 0);
+    document.getElementById('toggleBtn').textContent = 'Show image';
+  } else {
+    if (img) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    // redraw red overlay
+    ctx.save(); ctx.globalAlpha = 0.45;
+    ctx.drawImage(maskCanvas, 0, 0);
+    ctx.globalCompositeOperation = 'source-in';
+    ctx.fillStyle = '#e94560'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+    document.getElementById('toggleBtn').textContent = 'Show mask';
+  }
+}
+
+function setStatus(html) { document.getElementById('status').innerHTML = html; }
+
+async function doErase() {
+  if (!hasMask || !img) return;
+  setStatus('<span class="spinner"></span>Erasing… AI is filling the marked area.');
+  document.getElementById('eraseBtn').disabled = true;
+  // dilate mask slightly so edges are fully covered
+  const dil = document.createElement('canvas');
+  dil.width = maskCanvas.width; dil.height = maskCanvas.height;
+  const dctx = dil.getContext('2d');
+  dctx.filter = 'blur(3px)';
+  dctx.drawImage(maskCanvas, 0, 0);
+  const payload = { image: origDataUrl, mask: dil.toDataURL('image/png') };
+  try {
+    const res = await fetch('/api/eraser', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.ok) {
+      resultDataUrl = data.image;
+      document.getElementById('beforeImg').src = origDataUrl;
+      document.getElementById('resultImg').src = resultDataUrl;
+      document.getElementById('compareWrap').style.display = 'block';
+      const ri = new Image();
+      ri.onload = () => { ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(ri, 0, 0, canvas.width, canvas.height); };
+      ri.src = resultDataUrl;
+      setStatus('✅ Done! Compare below or download. Brush again for touch-ups.');
+    } else {
+      setStatus('❌ ' + (data.error || 'Erase failed.'));
+    }
+  } catch (err) {
+    setStatus('❌ Network error: ' + err.message);
+  }
+  document.getElementById('eraseBtn').disabled = !hasMask;
+}
+
+function downloadResult() {
+  if (!resultDataUrl) return;
+  const a = document.createElement('a');
+  a.href = resultDataUrl; a.download = 'erased.png';
+  a.click();
+}
+</script>
+</body>
+</html>

@@ -394,5 +394,52 @@ def api_videos():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/eraser")
+def eraser_page():
+    """Magic Eraser — Canva-style manual brush eraser."""
+    return render_template("eraser.html")
+
+
+@app.route("/api/eraser", methods=["POST"])
+def api_eraser():
+    """Inpaint the user-brushed mask. Only masked pixels are blended;
+    everything else stays bit-identical (v12 approach)."""
+    import base64
+    import io
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return jsonify({"ok": False, "error": "opencv not installed"}), 500
+    try:
+        data = request.get_json(force=True)
+        img_b64 = data["image"].split(",", 1)[-1]
+        mask_b64 = data["mask"].split(",", 1)[-1]
+        img_arr = np.frombuffer(base64.b64decode(img_b64), np.uint8)
+        mask_arr = np.frombuffer(base64.b64decode(mask_b64), np.uint8)
+        img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+        mask_raw = cv2.imdecode(mask_arr, cv2.IMREAD_GRAYSCALE)
+        if img is None or mask_raw is None:
+            return jsonify({"ok": False, "error": "bad image/mask"}), 400
+        h, w = img.shape[:2]
+        mask = cv2.resize(mask_raw, (w, h))
+        _, mask = cv2.threshold(mask, 30, 255, cv2.THRESH_BINARY)
+        if int((mask > 0).sum()) < 10:
+            return jsonify({"ok": False, "error": "brush over the area first"}), 400
+        # Dilate once so stroke edges are fully covered
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+        # Telea inpaint, then blend ONLY masked pixels (feathered edges)
+        filled = cv2.inpaint(img, mask, 3, cv2.INPAINT_TELEA)
+        m = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (5, 5), 0)
+        m3 = np.stack([m] * 3, axis=2)
+        out = (img.astype(np.float32) * (1 - m3) + filled.astype(np.float32) * m3)
+        out = np.clip(out, 0, 255).astype(np.uint8)
+        _, buf = cv2.imencode(".png", out)
+        out_b64 = base64.b64encode(buf).decode()
+        return jsonify({"ok": True, "image": "data:image/png;base64," + out_b64})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
