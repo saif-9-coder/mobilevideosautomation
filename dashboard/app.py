@@ -402,8 +402,15 @@ def eraser_page():
 
 @app.route("/api/eraser", methods=["POST"])
 def api_eraser():
-    """Inpaint the user-brushed mask. Only masked pixels are blended;
-    everything else stays bit-identical (v12 approach)."""
+    """Smart Magic Eraser (Canva-style).
+
+    The user brushes over the object/watermark to remove. Instead of
+    inpainting the whole brushed blob (which smears the area), we detect
+    the actual foreground strokes inside the brush — pixels that differ
+    from the local background — and inpaint only those with a tight mask.
+    Everything else stays bit-identical. For non-text objects (no strokes
+    found), the whole brush is inpainted with a gentle edge.
+    """
     import base64
     import io
     try:
@@ -426,12 +433,36 @@ def api_eraser():
         _, mask = cv2.threshold(mask, 30, 255, cv2.THRESH_BINARY)
         if int((mask > 0).sum()) < 10:
             return jsonify({"ok": False, "error": "brush over the area first"}), 400
-        # Dilate once so stroke edges are fully covered
-        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
-        # Telea inpaint, then blend ONLY masked pixels (feathered edges)
-        filled = cv2.inpaint(img, mask, 3, cv2.INPAINT_TELEA)
-        m = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (5, 5), 0)
-        m3 = np.stack([m] * 3, axis=2)
+
+        brush = (mask > 0).astype(np.uint8)
+        # --- Smart step: find foreground strokes inside the brush ---
+        # Local background estimate (large median blur removes thin text)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        bg = cv2.medianBlur(gray, 21)
+        dev = cv2.absdiff(gray, bg)
+        brush_search = cv2.dilate(brush,
+                                  cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)),
+                                  iterations=1)
+        strokes = ((dev > 14).astype(np.uint8)) * brush
+        strokes = cv2.morphologyEx(strokes, cv2.MORPH_OPEN,
+                                   cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)))
+        stroke_frac = float(strokes.sum()) / max(1, int(brush.sum()))
+
+        if int(strokes.sum()) > 40 and stroke_frac < 0.7:
+            # Text/watermark: tight stroke mask + Navier-Stokes inpaint
+            sm = cv2.dilate(strokes * 255,
+                            cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+                            iterations=1)
+            filled = cv2.inpaint(img, sm, 4, cv2.INPAINT_NS)
+            mf = cv2.GaussianBlur(sm.astype(np.float32) / 255.0, (3, 3), 0)
+        else:
+            # Object: whole brush, gentle edge, Navier-Stokes inpaint
+            m = cv2.dilate(brush * 255,
+                           cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+                           iterations=1)
+            filled = cv2.inpaint(img, m, 4, cv2.INPAINT_NS)
+            mf = cv2.GaussianBlur(m.astype(np.float32) / 255.0, (5, 5), 0)
+        m3 = np.stack([mf] * 3, axis=2)
         out = (img.astype(np.float32) * (1 - m3) + filled.astype(np.float32) * m3)
         out = np.clip(out, 0, 255).astype(np.uint8)
         _, buf = cv2.imencode(".png", out)
