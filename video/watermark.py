@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v29"
+_CACHE_VERSION = "v33"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.68
@@ -135,9 +135,9 @@ def _detect_bottom_edge(gray):
                 continue
             bg = cv2.medianBlur(roi, 15)
             diff = cv2.absdiff(roi.astype(np.float32), bg.astype(np.float32))
-            # Text-like: moderate diff pixels (not too few, not too many)
-            text_px = int(((diff > 12) & (diff < 120)).sum())
-            if text_px > best_score and text_px < 3000 and text_px > 80:
+            # Text-like: pixels differing from background (text strokes)
+            text_px = int((diff > 12).sum())
+            if text_px > best_score and text_px < 4000 and text_px > 80:
                 best_score = text_px
                 best_box = (x, y, ww, wh)
     if best_box:
@@ -458,6 +458,12 @@ def clean_watermark(src_path):
             return src_path
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         verified = _detect(gray)
+        # Add fallback (sliding window) boxes FIRST - more reliable for faint
+        try:
+            fb = [(b, None) for b in _detect_bottom_edge(gray)]
+            verified = fb + verified
+        except Exception:
+            pass
         if not verified:
             return src_path
         done = False
@@ -477,6 +483,7 @@ def clean_watermark(src_path):
                         full_mask[ry:ry+th, rx:rx+tw] = m
                         img[:] = cv2.inpaint(img, full_mask, 3, cv2.INPAINT_TELEA)
                         done = True
+                        break  # Fallback succeeded, skip templates
                 elif _remove_box(img, gray, box):
                     done = True
             except Exception:
