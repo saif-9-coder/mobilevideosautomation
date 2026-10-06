@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v24"
+_CACHE_VERSION = "v29"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.68
@@ -116,65 +116,33 @@ def _verify(gray, x, y, tw, th, tpl_idx):
 
 
 def _detect_bottom_edge(gray):
-    """Fallback: scan bottom edge for small bright text (watermark).
+    """Fallback: sliding-window search for watermark text in bottom area.
 
-    Catches watermarks missed by template matching (tiny/different style).
-    Looks for text-like bright blobs in the bottom 15% of the image.
+    Finds the window with the most text-like pixels (local contrast).
+    Robust for small/faint watermarks missed by template matching.
     """
     h, w = gray.shape
-    # Bottom 15% strip
-    y0 = int(h * 0.85)
-    strip = gray[y0:h, :]
-    # Bright text on background: local contrast (low threshold for faint text)
-    bg = cv2.medianBlur(strip, 15)
-    diff = cv2.absdiff(strip, bg)
-    # Text pixels differ from local background (faint watermarks included)
-    mask = (diff > 10).astype(np.uint8) * 255
-    # Clean up: remove tiny noise
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
-                            cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
-    # Find connected components
-    n, labels, stats, cent = cv2.connectedComponentsWithStats(mask, 8)
-    boxes = []
-    for i in range(1, n):
-        x, y, bw, bh, area = stats[i]
-        # Watermark is usually bottom-right; skip left-side false positives
-        if x < w * 0.4: continue
-        # Watermark text: wide, short
-        if bw < 25 or bw > w * 0.4: continue
-        if bh < 3 or bh > 35: continue
-        if bw / max(bh, 1) < 2.5: continue
-        if area < 40: continue
-        boxes.append((x, y0 + y, bw, bh))
-    # Merge nearby boxes (text fragments belong to one watermark)
-    merged = []
-    for b in sorted(boxes, key=lambda b: b[0]):
-        if merged and b[0] - (merged[-1][0] + merged[-1][2]) < 30:
-            # Overlapping or close: merge
-            x0 = min(merged[-1][0], b[0])
-            y0m = min(merged[-1][1], b[1])
-            x1 = max(merged[-1][0] + merged[-1][2], b[0] + b[2])
-            y1 = max(merged[-1][1] + merged[-1][3], b[1] + b[3])
-            merged[-1] = (x0, y0m, x1 - x0, y1 - y0m)
-        else:
-            merged.append(b)
-    # Expand boxes to cover full watermark text (fragments -> full)
-    # "www.GSMArena.com" is typically 80-150px wide
-    expanded = []
-    for (x, y, bw, bh) in merged:
-        # Expand horizontally to expected watermark width
-        cx = x + bw // 2
-        new_w = max(bw, 120)
-        nx = max(0, cx - new_w // 2)
-        # Keep within image
-        nx = min(nx, w - new_w)
-        # Expand vertically slightly
-        ny = max(0, y - 5)
-        nh = bh + 10
-        expanded.append((nx, ny, new_w, nh))
-    # Prefer rightmost and largest
-    expanded.sort(key=lambda b: (b[0], b[2]), reverse=True)
-    return expanded
+    best_score = 0
+    best_box = None
+    # Search bottom 20%, right 50%
+    y_start, y_end = int(h * 0.80), h - 25
+    x_start, x_end = int(w * 0.50), w - 120
+    ww, wh = 140, 30
+    for y in range(y_start, y_end, 8):
+        for x in range(x_start, x_end, 12):
+            roi = gray[y:y+wh, x:x+ww]
+            if roi.shape[0] < wh or roi.shape[1] < ww:
+                continue
+            bg = cv2.medianBlur(roi, 15)
+            diff = cv2.absdiff(roi.astype(np.float32), bg.astype(np.float32))
+            # Text-like: moderate diff pixels (not too few, not too many)
+            text_px = int(((diff > 12) & (diff < 120)).sum())
+            if text_px > best_score and text_px < 3000 and text_px > 80:
+                best_score = text_px
+                best_box = (x, y, ww, wh)
+    if best_box:
+        return [best_box]
+    return []
 
 
 def _detect(gray):
@@ -463,38 +431,6 @@ def _remove_box(img_bgr, gray, box):
     return True
 
 
-def _clean_bottom_right_corner(img_bgr, gray):
-    """Dedicated cleaner for GSMArena bottom-right watermark.
-
-    The watermark is often small/faint here and missed by template matching.
-    This does a direct, aggressive clean of the bottom-right corner.
-    Returns True if text was found and removed.
-    """
-    h, w = gray.shape
-    # Bottom-right 35% x 15% region
-    rx, ry = int(w * 0.65), int(h * 0.85)
-    rw, rh = w - rx, h - ry
-    if rw < 50 or rh < 20:
-        return False
-    roi_gray = gray[ry:ry+rh, rx:rx+rw]
-    bg = cv2.medianBlur(roi_gray, 15)
-    diff = cv2.absdiff(roi_gray.astype(np.float32), bg.astype(np.float32))
-    # Text mask (low threshold for faint text)
-    mask_roi = (diff > 8).astype(np.uint8) * 255
-    if int((mask_roi > 0).sum()) < 30:
-        return False
-    # Expand mask slightly to catch faint edges
-    mask_roi = cv2.dilate(mask_roi,
-                          cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
-                          iterations=1)
-    # Full-image mask
-    mask = np.zeros((h, w), np.uint8)
-    mask[ry:ry+rh, rx:rx+rw] = mask_roi
-    # Inpaint
-    img_bgr[:] = cv2.inpaint(img_bgr, mask, 3, cv2.INPAINT_TELEA)
-    return True
-
-
 def clean_watermark(src_path):
     """Remove GSMArena watermark stamps from an image.
 
@@ -525,18 +461,42 @@ def clean_watermark(src_path):
         if not verified:
             return src_path
         done = False
-        for (box, _stroke_info) in verified[:_MAX_BOXES]:
+        for (box, stroke_info) in verified[:_MAX_BOXES]:
             try:
-                if _remove_box(img, gray, box):
+                # Fallback boxes (None info): use simple direct inpaint
+                # (sliding window already found text location)
+                if stroke_info is None:
+                    rx, ry, tw, th = box
+                    h, w = gray.shape
+                    # Build tight text mask within box
+                    patch = gray[ry:ry+th, rx:rx+tw].astype(np.float32)
+                    bg = cv2.medianBlur(gray[ry:ry+th, rx:rx+tw], 15).astype(np.float32)
+                    m = (cv2.absdiff(patch, bg) > 10).astype(np.uint8) * 255
+                    if int((m > 0).sum()) >= 10:
+                        full_mask = np.zeros((h, w), np.uint8)
+                        full_mask[ry:ry+th, rx:rx+tw] = m
+                        img[:] = cv2.inpaint(img, full_mask, 3, cv2.INPAINT_TELEA)
+                        done = True
+                elif _remove_box(img, gray, box):
                     done = True
             except Exception:
                 continue
-        # Dedicated bottom-right corner clean (catches missed watermarks)
-        try:
-            if _clean_bottom_right_corner(img, gray):
-                done = True
-        except Exception:
-            pass
+        # Safe bottom-right check: small precise ROI for faint watermarks
+        if not done:
+            try:
+                h, w = gray.shape
+                # Bottom-right 25% x 10%: where GSMArena puts small watermarks
+                rx, ry = int(w * 0.75), int(h * 0.90)
+                rw, rh = w - rx, h - ry
+                # Only proceed if there's bright text-like content
+                roi = gray[ry:ry+rh, rx:rx+rw]
+                # Bright pixels (text is brighter than dark bg)
+                bright = (roi > 100).sum()
+                if bright > 20 and bright < rw * rh * 0.3:
+                    if _remove_box_v14(img, gray, (rx, ry, rw, rh)):
+                        done = True
+            except Exception:
+                pass
         if not done:
             return src_path
         cv2.imwrite(dst, img)
