@@ -449,11 +449,45 @@ def api_eraser():
         stroke_frac = float(strokes.sum()) / max(1, int(brush.sum()))
 
         if int(strokes.sum()) > 40 and stroke_frac < 0.7:
-            # Text/watermark: tight stroke mask + Navier-Stokes inpaint
+            # Text/watermark: tight stroke mask
             sm = cv2.dilate(strokes * 255,
                             cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
                             iterations=1)
-            filled = cv2.inpaint(img, sm, 4, cv2.INPAINT_NS)
+            # If background around strokes is smooth, fill with median color
+            # (cleanest on gradients — no inpaint blur). Else Navier-Stokes.
+            ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+            ring = cv2.subtract(cv2.dilate(sm, ring_k, iterations=2), sm)
+            ring_px = img[ring > 0]
+            use_flat = False
+            if len(ring_px) > 50:
+                if float(ring_px.reshape(-1, 3).std()) < 18:
+                    use_flat = True
+            if use_flat:
+                med = np.median(ring_px.reshape(-1, 3), axis=0).astype(np.uint8)
+                filled = img.copy()
+                filled[sm > 0] = med
+            else:
+                # Try LaMa AI first (Canva-like quality) if available
+                filled = None
+                try:
+                    from simple_lama_inpainting import SimpleLama
+                    from PIL import Image
+                    lama = SimpleLama()
+                    pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                    pil_m = Image.fromarray(sm)
+                    mw, mh = pil_img.size
+                    sc = min(1.0, 1024 / max(mw, mh))
+                    if sc < 1.0:
+                        rs = lama(pil_img.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS),
+                                  pil_m.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS))
+                        res = rs.resize((mw, mh), Image.LANCZOS)
+                    else:
+                        res = lama(pil_img, pil_m)
+                    filled = cv2.cvtColor(np.array(res), cv2.COLOR_RGB2BGR)
+                except Exception:
+                    filled = None
+                if filled is None:
+                    filled = cv2.inpaint(img, sm, 4, cv2.INPAINT_NS)
             mf = cv2.GaussianBlur(sm.astype(np.float32) / 255.0, (3, 3), 0)
         else:
             # Object: whole brush, gentle edge, Navier-Stokes inpaint
