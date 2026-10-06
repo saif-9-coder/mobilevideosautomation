@@ -429,7 +429,14 @@ def _remove_box_lama(img_bgr, box):
 
 
 def _remove_box(img_bgr, gray, box):
-    # v14: Best-practice with verification (primary)
+    # LaMa AI FIRST (best quality, Canva-like) - this is what worked
+    # on Saif's test images. Classical methods run only if LaMa fails.
+    try:
+        if _remove_box_lama(img_bgr, box):
+            return True
+    except Exception:
+        pass
+    # v14: Best-practice with verification (fallback)
     try:
         if _remove_box_v14(img_bgr, gray, box):
             return True
@@ -437,9 +444,6 @@ def _remove_box(img_bgr, gray, box):
         pass
     # v13: Ultra-minimal fallback
     if _remove_box_minimal(img_bgr, gray, box):
-        return True
-    # v10: LaMa AI fallback
-    if _remove_box_lama(img_bgr, box):
         return True
     # Fallback to Telea inpainting
     """Erase verified watermark text with tight-mask Telea inpainting.

@@ -197,6 +197,9 @@ function toggleMask() {
 
 function setStatus(html) { document.getElementById('status').innerHTML = html; }
 
+// Tracks whether LaMa AI is available (set by checkAI below)
+let aiReady = false;
+
 // Check AI status on load
 (async function checkAI() {
   try {
@@ -205,6 +208,7 @@ function setStatus(html) { document.getElementById('status').innerHTML = html; }
     const badge = document.getElementById('aiBadge');
     const btn = document.getElementById('aiBtn');
     if (d.ai) {
+      aiReady = true;
       badge.textContent = '🤖 AI Mode ON (best quality)';
       badge.style.color = '#7dffa8';
       btn.style.display = 'none';
@@ -228,6 +232,7 @@ async function installAI() {
       const d = await r.json();
       if (d.ai) {
         clearInterval(poll);
+        aiReady = true;
         document.getElementById('aiBadge').textContent = '🤖 AI Mode ON (best quality)';
         document.getElementById('aiBadge').style.color = '#7dffa8';
         btn.style.display = 'none';
@@ -250,7 +255,7 @@ async function doErase() {
   const dctx = dil.getContext('2d');
   dctx.filter = 'blur(3px)';
   dctx.drawImage(maskCanvas, 0, 0);
-  const payload = { image: origDataUrl, mask: dil.toDataURL('image/png') };
+  const payload = { image: origDataUrl, mask: dil.toDataURL('image/png'), ai_mode: aiReady };
   try {
     const res = await fetch('/api/eraser', {
       method: 'POST', headers: {'Content-Type': 'application/json'},

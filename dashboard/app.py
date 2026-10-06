@@ -463,6 +463,7 @@ def api_eraser():
         data = request.get_json(force=True)
         img_b64 = data["image"].split(",", 1)[-1]
         mask_b64 = data["mask"].split(",", 1)[-1]
+        ai_mode = bool(data.get("ai_mode", False))
         img_arr = np.frombuffer(base64.b64decode(img_b64), np.uint8)
         mask_arr = np.frombuffer(base64.b64decode(mask_b64), np.uint8)
         img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
@@ -476,6 +477,44 @@ def api_eraser():
             return jsonify({"ok": False, "error": "brush over the area first"}), 400
 
         brush = (mask > 0).astype(np.uint8)
+
+        # --- AI Mode: user's full brush goes straight to LaMa ---
+        # No stroke shrinking — LaMa handles the whole brushed area with
+        # professional quality. This is what worked on Saif's test images.
+        if ai_mode:
+            try:
+                from simple_lama_inpainting import SimpleLama
+                from PIL import Image
+                _lama = SimpleLama()
+                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                # Dilate slightly for clean edges
+                full_m = cv2.dilate(brush * 255,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                                    iterations=1)
+                pil_m = Image.fromarray(full_m)
+                mw, mh = pil_img.size
+                sc = min(1.0, 1024 / max(mw, mh))
+                if sc < 1.0:
+                    rs = _lama(pil_img.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS),
+                               pil_m.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS))
+                    res = rs.resize((mw, mh), Image.LANCZOS)
+                else:
+                    res = _lama(pil_img, pil_m)
+                filled = cv2.cvtColor(np.array(res), cv2.COLOR_RGB2BGR)
+                if filled.shape[1] != w or filled.shape[0] != h:
+                    filled = cv2.resize(filled, (w, h))
+                # Feathered blend at mask edges
+                mf = cv2.GaussianBlur(full_m.astype(np.float32) / 255.0, (5, 5), 0)
+                m3 = np.stack([mf] * 3, axis=2)
+                out = (img.astype(np.float32) * (1 - m3) +
+                       filled.astype(np.float32) * m3)
+                out = np.clip(out, 0, 255).astype(np.uint8)
+                _, buf = cv2.imencode(".png", out)
+                out_b64 = base64.b64encode(buf).decode()
+                return jsonify({"ok": True, "image": "data:image/png;base64," + out_b64})
+            except Exception as e:
+                # Fall through to classical if LaMa fails
+                pass
         # --- Smart step: find foreground strokes inside the brush ---
         # Local background estimate (large median blur removes thin text)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
