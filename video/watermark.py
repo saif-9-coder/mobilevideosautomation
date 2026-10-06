@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v33"
+_CACHE_VERSION = "v40"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.68
@@ -116,15 +116,23 @@ def _verify(gray, x, y, tw, th, tpl_idx):
 
 
 def _detect_bottom_edge(gray):
-    """Fallback: sliding-window search for watermark text in bottom area.
+    """Fallback: sliding-window search for watermark text on image edges.
 
-    Finds the window with the most text-like pixels (local contrast).
-    Robust for small/faint watermarks missed by template matching.
+    Finds windows with the most text-like pixels (local contrast).
+    Searches bottom (horizontal watermarks) + left/right edges
+    (vertical watermarks). Robust for small/faint watermarks missed
+    by template matching.
     """
     h, w = gray.shape
-    best_score = 0
-    best_box = None
-    # Search bottom 20%, right 50%
+    boxes = []
+
+    def score_roi(roi):
+        bg = cv2.medianBlur(roi, 15)
+        diff = cv2.absdiff(roi.astype(np.float32), bg.astype(np.float32))
+        return int((diff > 12).sum())
+
+    # 1) Bottom area: horizontal watermarks (140x30 windows)
+    best_score, best_box = 0, None
     y_start, y_end = int(h * 0.80), h - 25
     x_start, x_end = int(w * 0.50), w - 120
     ww, wh = 140, 30
@@ -133,16 +141,48 @@ def _detect_bottom_edge(gray):
             roi = gray[y:y+wh, x:x+ww]
             if roi.shape[0] < wh or roi.shape[1] < ww:
                 continue
-            bg = cv2.medianBlur(roi, 15)
-            diff = cv2.absdiff(roi.astype(np.float32), bg.astype(np.float32))
-            # Text-like: pixels differing from background (text strokes)
-            text_px = int((diff > 12).sum())
+            text_px = score_roi(roi)
             if text_px > best_score and text_px < 4000 and text_px > 80:
                 best_score = text_px
                 best_box = (x, y, ww, wh)
     if best_box:
-        return [best_box]
-    return []
+        boxes.append(best_box)
+
+    # 2) Left edge: vertical watermarks (30x140 windows)
+    # Watermark sits at the very edge, top area — search narrow
+    # Force x=0: text is always at the extreme edge
+    best_score, best_box = 0, None
+    y_start, y_end = int(h * 0.02), int(h * 0.50)
+    ww, wh = 30, 140
+    x = 0
+    for y in range(y_start, y_end, 12):
+        roi = gray[y:y+wh, x:x+ww]
+        if roi.shape[0] < wh or roi.shape[1] < ww:
+            continue
+        text_px = score_roi(roi)
+        if text_px > best_score and text_px < 4000 and text_px > 80:
+            best_score = text_px
+            best_box = (x, y, ww, wh)
+    if best_box:
+        boxes.append(best_box)
+
+    # 3) Right edge: vertical watermarks (30x140 windows)
+    best_score, best_box = 0, None
+    x_start, x_end = int(w * 0.95), w - 30
+    y_start, y_end = int(h * 0.02), int(h * 0.50)
+    for y in range(y_start, y_end, 12):
+        for x in range(x_start, x_end, 8):
+            roi = gray[y:y+wh, x:x+ww]
+            if roi.shape[0] < wh or roi.shape[1] < ww:
+                continue
+            text_px = score_roi(roi)
+            if text_px > best_score and text_px < 4000 and text_px > 80:
+                best_score = text_px
+                best_box = (x, y, ww, wh)
+    if best_box:
+        boxes.append(best_box)
+
+    return boxes
 
 
 def _detect(gray):
@@ -467,14 +507,18 @@ def clean_watermark(src_path):
         if not verified:
             return src_path
         done = False
-        for (box, stroke_info) in verified[:_MAX_BOXES]:
+        fallback_done = False
+        for (box, stroke_info) in verified[:_MAX_BOXES + 3]:
             try:
                 # Fallback boxes (None info): use simple direct inpaint
                 # (sliding window already found text location)
                 if stroke_info is None:
                     rx, ry, tw, th = box
+                    # Skip vertical boxes (hard case: text on phone edges).
+                    # Classical methods damage these; leave for manual/LaMa.
+                    if th > tw * 1.5:
+                        continue
                     h, w = gray.shape
-                    # Build tight text mask within box
                     patch = gray[ry:ry+th, rx:rx+tw].astype(np.float32)
                     bg = cv2.medianBlur(gray[ry:ry+th, rx:rx+tw], 15).astype(np.float32)
                     m = (cv2.absdiff(patch, bg) > 10).astype(np.uint8) * 255
@@ -483,8 +527,9 @@ def clean_watermark(src_path):
                         full_mask[ry:ry+th, rx:rx+tw] = m
                         img[:] = cv2.inpaint(img, full_mask, 3, cv2.INPAINT_TELEA)
                         done = True
-                        break  # Fallback succeeded, skip templates
-                elif _remove_box(img, gray, box):
+                        fallback_done = True
+                        # don't break: process other fallback boxes too
+                elif not fallback_done and _remove_box(img, gray, box):
                     done = True
             except Exception:
                 continue
