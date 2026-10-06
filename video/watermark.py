@@ -25,7 +25,7 @@ except Exception:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE_DIR = os.path.join(_HERE, "work", "watermark")
-_CACHE_VERSION = "v13"
+_CACHE_VERSION = "v14"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.78
@@ -197,6 +197,94 @@ def _remove_box_minimal(img_bgr, gray, box):
     return True
 
 
+
+def _verify_clean(original_bgr, cleaned_bgr, mask):
+    """v14: Verify the cleaned image.
+
+    Returns (ok, reason):
+    - Outside the mask, pixels must be bit-identical to original.
+    - Inside the mask, no bright text remnants should remain.
+    """
+    m = (mask > 0)
+    if not m.any():
+        return True, "empty mask"
+    # 1. Outside mask: must be identical
+    outside = ~m
+    if outside.any():
+        if not np.array_equal(original_bgr[outside], cleaned_bgr[outside]):
+            diff = np.abs(original_bgr.astype(int) - cleaned_bgr.astype(int))
+            maxd = int(diff[outside].max())
+            if maxd > 0:
+                return False, f"outside changed (max diff {maxd})"
+    # 2. Inside mask: text should be gone (no strong bright strokes left)
+    gray_orig = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray_clean = cv2.cvtColor(cleaned_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    bg_med = cv2.medianBlur(gray_clean, 21)
+    residual = cv2.absdiff(gray_clean, bg_med)
+    # Bright residual inside mask = leftover text
+    left = int(((residual > 25) & m).sum())
+    if left > 30:
+        return False, f"text remnants ({left}px)"
+    return True, "ok"
+
+
+def _remove_box_v14(img_bgr, gray, box):
+    """v14: Best-practice text removal with verification.
+
+    1. Tightest confident text mask (no over-masking).
+    2. Fill with edge-aware local background (deterministic).
+    3. Verify: outside bit-identical, text fully gone, placement kept.
+    4. If verification fails, try one wider pass; else report.
+    """
+    rx, ry, tw, th = box
+    h, w = gray.shape
+    pad = 8
+    x0, y0 = max(0, rx - pad), max(0, ry - pad)
+    x1, y1 = min(w, rx + tw + pad), min(h, ry + th + pad)
+    orig_crop = img_bgr[y0:y1, x0:x1].copy()
+    patch = gray[y0:y1, x0:x1].astype(np.float32)
+
+    def build_mask(thresh, dil_iter):
+        bg_med = cv2.medianBlur(gray[y0:y1, x0:x1], 21).astype(np.float32)
+        s = (cv2.absdiff(patch, bg_med) > thresh).astype(np.uint8)
+        bm = np.zeros_like(s); bm[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 1
+        s = s * bm
+        if dil_iter:
+            s = cv2.dilate(s, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+                           iterations=dil_iter)
+        return (s * 255).astype(np.uint8)
+
+    def fill_with(mask):
+        # Edge-aware fill: Telea with small radius uses immediate neighbours,
+        # keeping gradients and placement intact.
+        crop = orig_crop.copy()
+        filled = cv2.inpaint(crop, mask, 3, cv2.INPAINT_TELEA)
+        m = (mask.astype(np.float32) / 255.0)
+        m = cv2.GaussianBlur(m, (3, 3), 0)
+        m3 = np.stack([m] * 3, axis=2)
+        blended = (crop.astype(np.float32) * (1 - m3)
+                   + filled.astype(np.float32) * m3)
+        return np.clip(blended, 0, 255).astype(np.uint8)
+
+    # Pass 1: tightest mask
+    mask = build_mask(12, 0)
+    if int((mask > 0).sum()) < 10:
+        return False
+    result = fill_with(mask)
+    ok, reason = _verify_clean(orig_crop, result, mask)
+    if ok:
+        img_bgr[y0:y1, x0:x1] = result
+        return True
+    # Pass 2: slightly wider mask (catch faint halo), re-verify
+    mask2 = build_mask(8, 1)
+    result2 = fill_with(mask2)
+    ok2, reason2 = _verify_clean(orig_crop, result2, mask2)
+    if ok2:
+        img_bgr[y0:y1, x0:x1] = result2
+        return True
+    return False
+
+
 def _remove_box_lama(img_bgr, box):
     """Remove watermark using LaMa AI inpainting (v10).
 
@@ -255,10 +343,16 @@ def _remove_box_lama(img_bgr, box):
 
 
 def _remove_box(img_bgr, gray, box):
-    # v13: Ultra-minimal first (Saif: don't touch original)
+    # v14: Best-practice with verification (primary)
+    try:
+        if _remove_box_v14(img_bgr, gray, box):
+            return True
+    except Exception:
+        pass
+    # v13: Ultra-minimal fallback
     if _remove_box_minimal(img_bgr, gray, box):
         return True
-    # v10: Try LaMa AI (professional quality)
+    # v10: LaMa AI fallback
     if _remove_box_lama(img_bgr, box):
         return True
     # Fallback to Telea inpainting
