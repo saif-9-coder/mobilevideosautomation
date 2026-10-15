@@ -29,7 +29,7 @@ _CACHE_VERSION = "v40"
 _TEMPLATES = ("wm_template.png", "wm_template_b.png", "wm_template_c.png")
 _SCALES = (0.6, 0.75, 0.9, 1.05, 1.2, 1.4)
 _NCC_THRESHOLD = 0.75  # strict: avoid false positives that cause damage
-_DICE_THRESHOLD = 0.20  # strict: verify stroke pattern matches text
+_DICE_THRESHOLD = 0.35  # strict: reject false positives like UI digits
 _MAX_BOXES = 4
 
 _tpl_cache = None
@@ -101,17 +101,25 @@ def _verify(gray, x, y, tw, th, tpl_idx):
             if ncc > best[0]:
                 best = (ncc, nx, ny)
     _, rx, ry = best
-    # Dice between image strokes and template strokes at refined position
+    # Dice between image strokes and template strokes at refined position.
+    # Take the best Dice across ALL templates — the matching template
+    # varies by watermark style.
     x0, y0 = max(0, rx - 3), max(0, ry - 3)
     x1, y1 = min(w, rx + tw + 3), min(h, ry + th + 3)
     patch = gray[y0:y1, x0:x1]
     img_st = _image_strokes(patch)
-    ts = cv2.resize(tpl_strokes[tpl_idx], (x1 - x0, y1 - y0))
-    inter = np.logical_and(img_st, ts).sum()
-    dice = inter / ts.sum() if ts.sum() else 0
-    if dice < _DICE_THRESHOLD:
+    best_dice = 0
+    best_ti = tpl_idx
+    for ti2, ts0 in enumerate(tpl_strokes):
+        ts = cv2.resize(ts0, (x1 - x0, y1 - y0))
+        inter = np.logical_and(img_st, ts).sum()
+        d = inter / ts.sum() if ts.sum() else 0
+        if d > best_dice:
+            best_dice = d
+            best_ti = ti2
+    if best_dice < _DICE_THRESHOLD:
         return False, None, None
-    return True, (rx, ry, tw, th), (img_st, (x0, y0))
+    return True, (rx, ry, tw, th), best_ti
 
 
 
@@ -214,9 +222,9 @@ def _detect(gray):
     for sc, x, y, tw, th, ti in cands:
         if len(verified) >= _MAX_BOXES:
             break
-        ok, box, stroke_info = _verify(gray, x, y, tw, th, ti)
+        ok, box, best_ti = _verify(gray, x, y, tw, th, ti)
         if ok:
-            verified.append((box, stroke_info))
+            verified.append((box, best_ti))
     # Fallback: if template matching found nothing, scan bottom edge
     if not verified:
         for (x, y, bw, bh) in _detect_bottom_edge(gray)[:_MAX_BOXES]:
@@ -237,261 +245,42 @@ def _detect(gray):
 
 
 
-# LaMa AI inpainting (professional quality). Loaded lazily.
-_LAMA = None
-def _get_lama():
-    global _LAMA
-    if _LAMA is None:
-        try:
-            from simple_lama_inpainting import SimpleLama
-            _LAMA = SimpleLama()
-        except Exception:
-            _LAMA = False
-    return _LAMA if _LAMA is not False else None
+# Safe eraser (Saif's rule: never damage the phone, not even a little).
+# Replaces the old LaMa AI path entirely — deterministic text-only removal.
+from video.safe_erase import erase_text_region
 
 
-def _remove_box_minimal(img_bgr, gray, box):
-    """v13: Ultra-minimal text removal.
+def _remove_box(img_bgr, gray, box, tpl_idx=None):
+    """Erase verified watermark text using the safe eraser.
 
-    Only the most confident text-stroke pixels are touched (high threshold,
-    no dilation). Each is filled with the median of nearby non-text pixels.
-    No AI generation, no inpainting - the original image is otherwise
-    bit-identical.
+    The verified box is expanded by 30px (template boxes are often
+    slightly tight). For template-verified boxes, the template's stroke
+    pattern is used as a prior mask (catches faint chars); seed+grow
+    detection covers the rest. Only text-like pixels are replaced with
+    the background color behind them. Phone edges are protected by the
+    eraser's edge filter; everything else stays bit-identical.
     """
     rx, ry, tw, th = box
     h, w = gray.shape
-    x0, y0 = max(0, rx - 5), max(0, ry - 5)
-    x1, y1 = min(w, rx + tw + 5), min(h, ry + th + 5)
-    patch = gray[y0:y1, x0:x1].astype(np.float32)
-    bg_med = cv2.medianBlur(gray[y0:y1, x0:x1], 21).astype(np.float32)
-    # Strict: only confident text pixels (high threshold, NO dilation)
-    strokes = (cv2.absdiff(patch, bg_med) > 12).astype(np.uint8)
-    # Restrict to verified box
-    bm = np.zeros_like(strokes); bm[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 1
-    strokes = strokes * bm
-    n = int(strokes.sum())
-    if n < 10:
-        return False
-    # Fill each stroke pixel with median of nearby non-stroke pixels
-    region = img_bgr[y0:y1, x0:x1].copy()
-    sm = strokes.astype(bool)
-    # Background estimate: median-blurred version (text-free)
-    bg_est = cv2.medianBlur(img_bgr[y0:y1, x0:x1], 15)
-    m3 = np.stack([sm] * 3, axis=2)
-    region[m3] = bg_est[m3]
-    img_bgr[y0:y1, x0:x1] = region
-    return True
-
-
-
-def _verify_clean(original_bgr, cleaned_bgr, mask):
-    """v14: Verify the cleaned image.
-
-    Returns (ok, reason):
-    - Outside the mask, pixels must be bit-identical to original.
-    - Inside the mask, no bright text remnants should remain.
-    """
-    m = (mask > 0)
-    if not m.any():
-        return True, "empty mask"
-    # 1. Outside mask: must be identical
-    outside = ~m
-    if outside.any():
-        if not np.array_equal(original_bgr[outside], cleaned_bgr[outside]):
-            diff = np.abs(original_bgr.astype(int) - cleaned_bgr.astype(int))
-            maxd = int(diff[outside].max())
-            if maxd > 0:
-                return False, f"outside changed (max diff {maxd})"
-    # 2. Inside mask: text should be gone (no strong bright strokes left)
-    gray_clean_u8 = cv2.cvtColor(cleaned_bgr, cv2.COLOR_BGR2GRAY)
-    gray_clean = gray_clean_u8.astype(np.float32)
-    bg_med = cv2.medianBlur(gray_clean_u8, 21).astype(np.float32)
-    residual = cv2.absdiff(gray_clean, bg_med)
-    # Bright residual inside mask = leftover text
-    left = int(((residual > 25) & m).sum())
-    if left > 30:
-        return False, f"text remnants ({left}px)"
-    return True, "ok"
-
-
-def _remove_box_v14(img_bgr, gray, box):
-    """v14: Best-practice text removal with verification.
-
-    1. Tightest confident text mask (no over-masking).
-    2. Fill with edge-aware local background (deterministic).
-    3. Verify: outside bit-identical, text fully gone, placement kept.
-    4. If verification fails, try one wider pass; else report.
-    """
-    rx, ry, tw, th = box
-    h, w = gray.shape
-    pad = 8
+    pad = 10
     x0, y0 = max(0, rx - pad), max(0, ry - pad)
     x1, y1 = min(w, rx + tw + pad), min(h, ry + th + pad)
-    orig_crop = img_bgr[y0:y1, x0:x1].copy()
-    patch = gray[y0:y1, x0:x1].astype(np.float32)
-
-    def build_mask(thresh, dil_iter):
-        bg_med = cv2.medianBlur(gray[y0:y1, x0:x1], 21).astype(np.float32)
-        s = (cv2.absdiff(patch, bg_med) > thresh).astype(np.uint8)
-        bm = np.zeros_like(s); bm[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 1
-        s = s * bm
-        if dil_iter:
-            s = cv2.dilate(s, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
-                           iterations=dil_iter)
-        return (s * 255).astype(np.uint8)
-
-    def fill_with(mask):
-        # Edge-aware fill: Telea with small radius uses immediate neighbours,
-        # keeping gradients and placement intact.
-        crop = orig_crop.copy()
-        filled = cv2.inpaint(crop, mask, 3, cv2.INPAINT_TELEA)
-        m = (mask.astype(np.float32) / 255.0)
-        m = cv2.GaussianBlur(m, (3, 3), 0)
-        m3 = np.stack([m] * 3, axis=2)
-        blended = (crop.astype(np.float32) * (1 - m3)
-                   + filled.astype(np.float32) * m3)
-        return np.clip(blended, 0, 255).astype(np.uint8)
-
-    # Pass 1: tightest mask
-    mask = build_mask(12, 0)
-    if int((mask > 0).sum()) < 10:
-        return False
-    result = fill_with(mask)
-    ok, reason = _verify_clean(orig_crop, result, mask)
-    if ok:
-        img_bgr[y0:y1, x0:x1] = result
-        return True
-    # Pass 2: slightly wider mask (catch faint halo), re-verify
-    mask2 = build_mask(8, 1)
-    result2 = fill_with(mask2)
-    ok2, reason2 = _verify_clean(orig_crop, result2, mask2)
-    if ok2:
-        img_bgr[y0:y1, x0:x1] = result2
+    region = np.zeros((h, w), np.uint8)
+    region[y0:y1, x0:x1] = 255
+    prior = None
+    if tpl_idx is not None:
+        _tpls, tpl_strokes = _load_templates()
+        if 0 <= tpl_idx < len(tpl_strokes):
+            tm = cv2.resize(tpl_strokes[tpl_idx], (tw, th))
+            tm = cv2.dilate(tm, cv2.getStructuringElement(
+                cv2.MORPH_RECT, (3, 3)), iterations=1)
+            prior = np.zeros((h, w), np.uint8)
+            prior[ry:ry + th, rx:rx + tw] = (tm * 255).astype(np.uint8)
+    out, info = erase_text_region(img_bgr, region, prior_mask=prior)
+    if info.get("ok") or info.get("replaced_px", 0) > 0:
+        img_bgr[:] = out
         return True
     return False
-
-
-def _remove_box_lama(img_bgr, box, aggressive=False):
-    """Remove watermark using LaMa AI inpainting (v10).
-
-    Runs LaMa on a tight crop around the watermark for speed,
-    then pastes the cleaned crop back. Falls back to None if
-    LaMa is not available.
-
-    aggressive=True: for bottom-edge boxes where watermarks live.
-    Uses looser thresholds to catch faint text. Still safe because
-    the box is at the edge, not the middle of the phone.
-    """
-    lama = _get_lama()
-    if lama is None:
-        return False
-    rx, ry, tw, th = box
-    h, w = img_bgr.shape[:2]
-    # Crop with padding for context (LaMa needs surrounding area)
-    pad = 40
-    x0, y0 = max(0, rx - pad), max(0, ry - pad)
-    x1, y1 = min(w, rx + tw + pad), min(h, ry + th + pad)
-    crop_bgr = img_bgr[y0:y1, x0:x1]
-    ch, cw = crop_bgr.shape[:2]
-    # Tight mask: only the actual text strokes, not the full box.
-    # This keeps LaMa's regeneration minimal so surrounding pixels
-    # stay pixel-identical and nothing shifts.
-    # SAFETY (Saif: never damage): watermark text is BRIGHT white and
-    # high-contrast. Use a high threshold so we only catch real text,
-    # not image texture. If the "strokes" cover too much of the box,
-    # it's a false positive — skip rather than damage.
-    # aggressive=True (bottom edge): looser thresholds for faint text.
-    contrast_thr = 10 if aggressive else 15
-    bright_thr = 100 if aggressive else 140
-    coverage_limit = 0.40 if aggressive else 0.25
-    crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    bg_med = cv2.medianBlur(crop_gray, 21)
-    strokes = (cv2.absdiff(crop_gray.astype(np.float32),
-                           bg_med.astype(np.float32)) > contrast_thr).astype(np.uint8)
-    # Text is bright: keep only bright strokes
-    bright = (crop_gray > bright_thr).astype(np.uint8)
-    strokes = strokes * bright
-    # Restrict to the verified box area
-    box_mask = np.zeros((ch, cw), dtype=np.uint8)
-    box_mask[ry-y0:ry-y0+th, rx-x0:rx-x0+tw] = 1
-    strokes = strokes * box_mask
-    # Safety: if strokes cover too much of box area, it's texture not text
-    box_area = tw * th
-    if box_area > 0 and float(strokes.sum()) / box_area > coverage_limit:
-        return False
-    strokes = cv2.dilate(strokes,
-                         cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
-                         iterations=1)
-    if strokes.sum() < 20:
-        return False
-    mask = (strokes * 255).astype(np.uint8)
-    # LaMa expects RGB
-    crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-    try:
-        result_pil = lama(crop_rgb, mask)
-    except Exception:
-        return False
-    result_rgb = np.array(result_pil)
-    result_bgr = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
-    # LaMa may pad output; resize back to crop size
-    if result_bgr.shape[:2] != (y1 - y0, x1 - x0):
-        result_bgr = cv2.resize(result_bgr, (x1 - x0, y1 - y0))
-    # Only replace the masked (text) pixels; keep original elsewhere.
-    # Feather the blend at edges for a seamless, shift-free result.
-    m = (mask.astype(np.float32) / 255.0)
-    m = cv2.GaussianBlur(m, (5, 5), 0)
-    m3 = np.stack([m] * 3, axis=2)
-    orig_crop = img_bgr[y0:y1, x0:x1].astype(np.float32)
-    blended = orig_crop * (1 - m3) + result_bgr.astype(np.float32) * m3
-    img_bgr[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
-    return True
-
-
-def _remove_box(img_bgr, gray, box):
-    # LaMa AI FIRST (best quality, Canva-like) - this is what worked
-    # on Saif's test images. Classical methods run only if LaMa fails.
-    try:
-        if _remove_box_lama(img_bgr, box):
-            return True
-    except Exception:
-        pass
-    # v14: Best-practice with verification (fallback)
-    try:
-        if _remove_box_v14(img_bgr, gray, box):
-            return True
-    except Exception:
-        pass
-    # v13: Ultra-minimal fallback
-    if _remove_box_minimal(img_bgr, gray, box):
-        return True
-    # Fallback to Telea inpainting
-    """Erase verified watermark text with tight-mask Telea inpainting.
-
-    Only the exact text-stroke pixels are interpolated (from immediate
-    neighbours); everything else stays bit-identical, so texture, grain
-    and gradients are preserved like professional tools.
-    """
-    rx, ry, tw, th = box
-    h, w = gray.shape
-    x0, y0 = max(0, rx - 3), max(0, ry - 3)
-    x1, y1 = min(w, rx + tw + 3), min(h, ry + th + 3)
-    if x1 - x0 < 8 or y1 - y0 < 4:
-        return False
-    patch = gray[y0:y1, x0:x1].astype(np.float32)
-    bg_med = cv2.medianBlur(gray[y0:y1, x0:x1], 21).astype(np.float32)
-    # Aggressive but tight stroke mask: the box is already verified to
-    # contain the watermark, so catch faint halo pixels too. Dilated
-    # slightly to cover anti-aliased text edges fully.
-    strokes = (cv2.absdiff(patch, bg_med) > 4).astype(np.uint8)
-    strokes = cv2.dilate(strokes,
-                         cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
-                         iterations=2)
-    if strokes.sum() < 20:
-        return False
-    mask = np.zeros((h, w), np.uint8)
-    mask[y0:y1, x0:x1] = strokes * 255
-    img_bgr[:] = cv2.inpaint(img_bgr, mask, 4, cv2.INPAINT_TELEA)
-    return True
 
 
 def clean_watermark(src_path):
@@ -520,42 +309,30 @@ def clean_watermark(src_path):
         if img is None:
             return src_path
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        verified = _detect(gray)
-        # Add fallback (sliding window) boxes FIRST - more reliable for faint
-        try:
-            fb = [(b, None) for b in _detect_bottom_edge(gray)]
-            verified = fb + verified
-        except Exception:
-            pass
-        if not verified:
-            return src_path
+        template_boxes = _detect(gray)  # strict, tight boxes
         done = False
-        fallback_done = False
-        for (box, stroke_info) in verified[:_MAX_BOXES + 3]:
+        for (box, _stroke_info) in template_boxes[:_MAX_BOXES]:
             try:
-                # Fallback boxes (None info): use simple direct inpaint
-                # (sliding window already found text location)
-                if stroke_info is None:
-                    rx, ry, tw, th = box
-                    # Skip vertical boxes (hard case: text on phone edges).
-                    # Classical methods damage these; leave for manual/LaMa.
-                    if th > tw * 1.5:
-                        continue
-                    h, w = gray.shape
-                    patch = gray[ry:ry+th, rx:rx+tw].astype(np.float32)
-                    bg = cv2.medianBlur(gray[ry:ry+th, rx:rx+tw], 15).astype(np.float32)
-                    m = (cv2.absdiff(patch, bg) > 10).astype(np.uint8) * 255
-                    if int((m > 0).sum()) >= 10:
-                        full_mask = np.zeros((h, w), np.uint8)
-                        full_mask[ry:ry+th, rx:rx+tw] = m
-                        img[:] = cv2.inpaint(img, full_mask, 3, cv2.INPAINT_TELEA)
-                        done = True
-                        fallback_done = True
-                        # don't break: process other fallback boxes too
-                elif not fallback_done and _remove_box(img, gray, box):
+                if _remove_box(img, gray, box):
                     done = True
             except Exception:
                 continue
+        if not done:
+            # Fallback: sliding-window search for faint/small watermarks
+            # missed by template matching.
+            try:
+                fb_boxes = _detect_bottom_edge(gray)
+            except Exception:
+                fb_boxes = []
+            for box in fb_boxes[:_MAX_BOXES]:
+                try:
+                    rx, ry, tw, th = box
+                    if th > tw * 1.5:
+                        continue  # vertical: manual eraser case
+                    if _remove_box(img, gray, (rx, ry, tw, th)):
+                        done = True
+                except Exception:
+                    continue
         # Safe bottom-right check: small precise ROI for faint watermarks
         if not done:
             try:
@@ -568,7 +345,7 @@ def clean_watermark(src_path):
                 # Bright pixels (text is brighter than dark bg)
                 bright = (roi > 100).sum()
                 if bright > 20 and bright < rw * rh * 0.3:
-                    if _remove_box_v14(img, gray, (rx, ry, rw, rh)):
+                    if _remove_box(img, gray, (rx, ry, rw, rh)):
                         done = True
             except Exception:
                 pass
@@ -584,7 +361,7 @@ def clean_cutout_watermark(cutout_path):
     """Remove GSMArena watermarks from a background-removed cutout (RGBA).
 
     Runs AFTER background removal (as Saif requested): the phone cutout goes
-    through the same LaMa cleaning used in the manual tool. Alpha channel is
+    through the same safe text eraser used in the manual tool. Alpha channel is
     preserved bit-identical; only RGB text pixels are inpainted.
 
     Returns the path of the cleaned cutout (cached). Returns the original
@@ -610,40 +387,38 @@ def clean_cutout_watermark(cutout_path):
         alpha = img_rgba[:, :, 3]
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-        # Same detection as clean_watermark: template + bottom-edge fallback
+        # Same detection as clean_watermark: template first, bottom-edge
+        # fallback only when template matching found nothing.
         verified = _detect(gray)
-        try:
-            fb = [(b, None) for b in _detect_bottom_edge(gray)]
-            verified = fb + verified
-        except Exception:
-            pass
+        if not verified:
+            try:
+                verified = [(b, None) for b in _detect_bottom_edge(gray)]
+            except Exception:
+                pass
         if not verified:
             return cutout_path
 
         done = False
-        fallback_done = False
-        for (box, stroke_info) in verified[:_MAX_BOXES + 3]:
+        for (box, tpl_idx) in verified[:_MAX_BOXES]:
             try:
-                if stroke_info is None:
-                    rx, ry, tw, th = box
-                    if th > tw * 1.5:
-                        continue
-                    h, w = gray.shape
-                    patch = gray[ry:ry+th, rx:rx+tw].astype(np.float32)
-                    bg = cv2.medianBlur(gray[ry:ry+th, rx:rx+tw], 15).astype(np.float32)
-                    m = (cv2.absdiff(patch, bg) > 10).astype(np.uint8) * 255
-                    if int((m > 0).sum()) >= 10:
-                        full_mask = np.zeros((h, w), np.uint8)
-                        full_mask[ry:ry+th, rx:rx+tw] = m
-                        # LaMa first for cutouts too (best quality)
-                        if not _remove_box_lama(bgr, (rx, ry, tw, th), aggressive=True):
-                            bgr[:] = cv2.inpaint(bgr, full_mask, 3, cv2.INPAINT_TELEA)
-                        done = True
-                        fallback_done = True
-                elif not fallback_done and _remove_box(bgr, gray, box):
+                if _remove_box(bgr, gray, box, tpl_idx):
                     done = True
             except Exception:
                 continue
+        if not done:
+            try:
+                fb_boxes = _detect_bottom_edge(gray)
+            except Exception:
+                fb_boxes = []
+            for box in fb_boxes[:_MAX_BOXES]:
+                try:
+                    rx, ry, tw, th = box
+                    if th > tw * 1.5:
+                        continue
+                    if _remove_box(bgr, gray, (rx, ry, tw, th)):
+                        done = True
+                except Exception:
+                    continue
         if not done:
             return cutout_path
         # Recombine with original alpha (bit-identical)

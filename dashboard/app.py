@@ -400,60 +400,18 @@ def eraser_page():
     return render_template("eraser.html")
 
 
-@app.route("/api/eraser/ai-status")
-def eraser_ai_status():
-    """Check if LaMa AI is available for best quality."""
-    try:
-        from simple_lama_inpainting import SimpleLama
-        return jsonify({"ok": True, "ai": True})
-    except ImportError:
-        return jsonify({"ok": True, "ai": False})
-
-
-_ai_installing = False
-
-@app.route("/api/eraser/install-ai", methods=["POST"])
-def eraser_install_ai():
-    """One-click LaMa AI install (2GB, one-time). Runs in background."""
-    global _ai_installing
-    if _ai_installing:
-        return jsonify({"ok": True, "status": "installing"})
-    try:
-        from simple_lama_inpainting import SimpleLama
-        return jsonify({"ok": True, "status": "ready"})
-    except ImportError:
-        pass
-    _ai_installing = True
-    import subprocess, sys, threading
-    def _install():
-        global _ai_installing
-        try:
-            subprocess.run([sys.executable, "-m", "pip", "install", "torch",
-                          "--index-url", "https://download.pytorch.org/whl/cpu",
-                          "-q", "--break-system-packages"],
-                         timeout=1800, capture_output=True)
-            subprocess.run([sys.executable, "-m", "pip", "install",
-                          "simple-lama-inpainting", "-q", "--break-system-packages",
-                          "--no-deps"], timeout=600, capture_output=True)
-        finally:
-            _ai_installing = False
-    threading.Thread(target=_install, daemon=True).start()
-    return jsonify({"ok": True, "status": "installing"})
-
-
 @app.route("/api/eraser", methods=["POST"])
 def api_eraser():
-    """Smart Magic Eraser (Canva-style).
+    """Safe Magic Eraser — text-only removal, never damages the image.
 
-    The user brushes over the object/watermark to remove. Instead of
-    inpainting the whole brushed blob (which smears the area), we detect
-    the actual foreground strokes inside the brush — pixels that differ
-    from the local background — and inpaint only those with a tight mask.
-    Everything else stays bit-identical. For non-text objects (no strokes
-    found), the whole brush is inpainted with a gentle edge.
+    The user brushes over the watermark. We erase ONLY the bright text
+    strokes inside the brush by filling them with the background color
+    behind the text (video.safe_erase). Everything else stays
+    bit-identical. No AI, no regeneration — the phone is never damaged.
+    For non-text objects (no text found), the whole brush is inpainted
+    with a gentle edge as before.
     """
     import base64
-    import io
     try:
         import cv2
         import numpy as np
@@ -463,7 +421,6 @@ def api_eraser():
         data = request.get_json(force=True)
         img_b64 = data["image"].split(",", 1)[-1]
         mask_b64 = data["mask"].split(",", 1)[-1]
-        ai_mode = bool(data.get("ai_mode", False))
         img_arr = np.frombuffer(base64.b64decode(img_b64), np.uint8)
         mask_arr = np.frombuffer(base64.b64decode(mask_b64), np.uint8)
         img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
@@ -476,165 +433,26 @@ def api_eraser():
         if int((mask > 0).sum()) < 10:
             return jsonify({"ok": False, "error": "brush over the area first"}), 400
 
-        brush = (mask > 0).astype(np.uint8)
-
-        # --- AI Mode: user's full brush goes straight to LaMa ---
-        # No stroke shrinking — LaMa handles the whole brushed area with
-        # professional quality. This is what worked on Saif's test images.
-        if ai_mode:
-            try:
-                from simple_lama_inpainting import SimpleLama
-                from PIL import Image
-                _lama = SimpleLama()
-                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                # Dilate slightly for clean edges
-                full_m = cv2.dilate(brush * 255,
-                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
-                                    iterations=1)
-                pil_m = Image.fromarray(full_m)
-                mw, mh = pil_img.size
-                sc = min(1.0, 1024 / max(mw, mh))
-                if sc < 1.0:
-                    rs = _lama(pil_img.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS),
-                               pil_m.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS))
-                    res = rs.resize((mw, mh), Image.LANCZOS)
-                else:
-                    res = _lama(pil_img, pil_m)
-                filled = cv2.cvtColor(np.array(res), cv2.COLOR_RGB2BGR)
-                if filled.shape[1] != w or filled.shape[0] != h:
-                    filled = cv2.resize(filled, (w, h))
-                # Feathered blend at mask edges
-                mf = cv2.GaussianBlur(full_m.astype(np.float32) / 255.0, (5, 5), 0)
-                m3 = np.stack([mf] * 3, axis=2)
-                out = (img.astype(np.float32) * (1 - m3) +
-                       filled.astype(np.float32) * m3)
-                out = np.clip(out, 0, 255).astype(np.uint8)
-                _, buf = cv2.imencode(".png", out)
-                out_b64 = base64.b64encode(buf).decode()
-                return jsonify({"ok": True, "image": "data:image/png;base64," + out_b64})
-            except Exception as e:
-                # Fall through to classical if LaMa fails
-                pass
-        # --- Smart step: find foreground strokes inside the brush ---
-        # Local background estimate (large median blur removes thin text)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        bg = cv2.medianBlur(gray, 21)
-        dev = cv2.absdiff(gray, bg)
-        brush_search = cv2.dilate(brush,
-                                  cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)),
-                                  iterations=1)
-        strokes = ((dev > 14).astype(np.uint8)) * brush
-        # Filter: text is BRIGHT (white), edges are medium gray.
-        # Keep only bright strokes to avoid damaging phone edges.
-        bright = (gray > 140).astype(np.uint8)
-        strokes = strokes * bright
-        strokes = cv2.morphologyEx(strokes, cv2.MORPH_OPEN,
-                                   cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)))
-        stroke_frac = float(strokes.sum()) / max(1, int(brush.sum()))
-
-        if int(strokes.sum()) > 40 and stroke_frac < 0.7:
-            # Text/watermark: tight stroke mask
-            sm = cv2.dilate(strokes * 255,
-                            cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
-                            iterations=1)
-            # Fill priority: LaMa AI first (best quality, Canva-like),
-            # then classical fallbacks.
-            filled = None
-            try:
-                from simple_lama_inpainting import SimpleLama
-                from PIL import Image
-                _lama = SimpleLama()
-                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                pil_m = Image.fromarray(sm)
-                mw, mh = pil_img.size
-                sc = min(1.0, 1024 / max(mw, mh))
-                if sc < 1.0:
-                    rs = _lama(pil_img.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS),
-                               pil_m.resize((int(mw*sc), int(mh*sc)), Image.LANCZOS))
-                    res = rs.resize((mw, mh), Image.LANCZOS)
-                else:
-                    res = _lama(pil_img, pil_m)
-                filled = cv2.cvtColor(np.array(res), cv2.COLOR_RGB2BGR)
-                # Ensure exact size match (LaMa may pad internally)
-                if filled.shape[1] != w or filled.shape[0] != h:
-                    filled = cv2.resize(filled, (w, h))
-            except Exception:
-                filled = None
-            if filled is None:
-                # Classical fallback: smooth bg -> median fill
-                ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
-                ring = cv2.subtract(cv2.dilate(sm, ring_k, iterations=2), sm)
-                ring_px = img[ring > 0]
-                use_flat = False
-                if len(ring_px) > 50:
-                    if float(ring_px.reshape(-1, 3).std()) < 18:
-                        use_flat = True
-            if filled is None and use_flat:
-                med = np.median(ring_px.reshape(-1, 3), axis=0).astype(np.uint8)
-                filled = img.copy()
-                filled[sm > 0] = med
-            if filled is None:
-                # Structure-aware fill: copy from nearest unmasked pixel
-                # along the structure direction (preserves texture, no blur).
-                # For tall (vertical) masks: nearest in same row.
-                # For wide (horizontal) masks: nearest in same column.
-                filled = None
-                ys, xs = np.where(sm > 0)
-                if len(xs) > 20:
-                    bw = int(xs.max() - xs.min()) + 1
-                    bh = int(ys.max() - ys.min()) + 1
-                    try:
-                        res = img.copy()
-                        sm_bin = (sm > 0)
-                        if bh > bw * 1.5:
-                            # Vertical: row-wise nearest neighbor
-                            for y in range(int(ys.min()), int(ys.max()) + 1):
-                                row_m = sm_bin[y]
-                                if not row_m.any():
-                                    continue
-                                unmasked = np.where(~row_m)[0]
-                                masked = np.where(row_m)[0]
-                                if len(unmasked) == 0:
-                                    continue
-                                # For each masked pixel, find nearest unmasked
-                                for xx in masked:
-                                    d = np.abs(unmasked - xx)
-                                    nearest = unmasked[np.argmin(d)]
-                                    res[y, xx] = img[y, nearest]
-                            filled = res
-                        elif bw > bh * 1.5:
-                            # Horizontal: column-wise nearest neighbor
-                            for x in range(int(xs.min()), int(xs.max()) + 1):
-                                col_m = sm_bin[:, x]
-                                if not col_m.any():
-                                    continue
-                                unmasked = np.where(~col_m)[0]
-                                masked = np.where(col_m)[0]
-                                if len(unmasked) == 0:
-                                    continue
-                                for yy in masked:
-                                    d = np.abs(unmasked - yy)
-                                    nearest = unmasked[np.argmin(d)]
-                                    res[yy, x] = img[nearest, x]
-                            filled = res
-                    except Exception:
-                        filled = None
-                if filled is None:
-                    filled = cv2.inpaint(img, sm, 4, cv2.INPAINT_NS)
-            mf = cv2.GaussianBlur(sm.astype(np.float32) / 255.0, (3, 3), 0)
+        from video.safe_erase import erase_text_region
+        # min_coverage=0: the user explicitly brushed the watermark.
+        out, info = erase_text_region(img, mask, min_coverage=0.0)
+        if info.get("ok") or info.get("replaced_px", 0) > 0:
+            sm = None  # safe_erase already verified outside-identical
         else:
-            # Object: whole brush, gentle edge, Navier-Stokes inpaint
-            m = cv2.dilate(brush * 255,
+            # No text found: object removal — gentle whole-brush inpaint.
+            m = cv2.dilate(mask,
                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
                            iterations=1)
             filled = cv2.inpaint(img, m, 4, cv2.INPAINT_NS)
             mf = cv2.GaussianBlur(m.astype(np.float32) / 255.0, (5, 5), 0)
-        m3 = np.stack([mf] * 3, axis=2)
-        out = (img.astype(np.float32) * (1 - m3) + filled.astype(np.float32) * m3)
-        out = np.clip(out, 0, 255).astype(np.uint8)
+            m3 = np.stack([mf] * 3, axis=2)
+            out = (img.astype(np.float32) * (1 - m3) +
+                   filled.astype(np.float32) * m3)
+            out = np.clip(out, 0, 255).astype(np.uint8)
         _, buf = cv2.imencode(".png", out)
         out_b64 = base64.b64encode(buf).decode()
-        return jsonify({"ok": True, "image": "data:image/png;base64," + out_b64})
+        return jsonify({"ok": True, "image": "data:image/png;base64," + out_b64,
+                        "detail": f"text removed ({info.get('replaced_px', 0)} px)"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
