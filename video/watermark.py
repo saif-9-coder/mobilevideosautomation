@@ -250,15 +250,46 @@ def _detect(gray):
 from video.safe_erase import erase_text_region
 
 
+def _polish_band(img_bgr, box):
+    """Final polish: in the tight text band, replace every pixel even
+    slightly brighter than the background.
+
+    Catches faint text ghosts the main eraser misses. Only runs inside
+    a verified text box; strong vertical gradients (phone edges) are
+    protected.
+    """
+    from video.safe_erase import _bg_estimate
+    rx, ry, tw, th = box
+    h, w = img_bgr.shape[:2]
+    x0, x1 = max(0, rx), min(w, rx + tw)
+    y0, y1 = max(0, ry), min(h, ry + th)
+    if x1 <= x0 or y1 <= y0:
+        return 0
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    bg = _bg_estimate(gray)
+    bgc = _bg_estimate(img_bgr)
+    bright = (gray[y0:y1, x0:x1].astype(np.int16)
+              > bg[y0:y1, x0:x1].astype(np.int16) + 1)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    strong_vert = np.abs(gx[y0:y1, x0:x1]) > 100
+    sel = bright & ~strong_vert
+    n = int(sel.sum())
+    if n:
+        out = img_bgr.copy()
+        band = out[y0:y1, x0:x1]
+        bandc = bgc[y0:y1, x0:x1]
+        band[sel] = bandc[sel]
+        img_bgr[:] = out
+    return n
+
+
 def _remove_box(img_bgr, gray, box, tpl_idx=None):
     """Erase verified watermark text using the safe eraser.
 
-    The verified box is expanded by 30px (template boxes are often
-    slightly tight). For template-verified boxes, the template's stroke
-    pattern is used as a prior mask (catches faint chars); seed+grow
-    detection covers the rest. Only text-like pixels are replaced with
-    the background color behind them. Phone edges are protected by the
-    eraser's edge filter; everything else stays bit-identical.
+    The verified box is expanded by 10px. Only text-like pixels are
+    replaced with the background color behind them. Phone edges are
+    protected; everything else stays bit-identical. A final polish
+    pass cleans faint ghosts inside the tight box.
     """
     rx, ry, tw, th = box
     h, w = gray.shape
@@ -267,18 +298,12 @@ def _remove_box(img_bgr, gray, box, tpl_idx=None):
     x1, y1 = min(w, rx + tw + pad), min(h, ry + th + pad)
     region = np.zeros((h, w), np.uint8)
     region[y0:y1, x0:x1] = 255
-    prior = None
-    if tpl_idx is not None:
-        _tpls, tpl_strokes = _load_templates()
-        if 0 <= tpl_idx < len(tpl_strokes):
-            tm = cv2.resize(tpl_strokes[tpl_idx], (tw, th))
-            tm = cv2.dilate(tm, cv2.getStructuringElement(
-                cv2.MORPH_RECT, (3, 3)), iterations=1)
-            prior = np.zeros((h, w), np.uint8)
-            prior[ry:ry + th, rx:rx + tw] = (tm * 255).astype(np.uint8)
-    out, info = erase_text_region(img_bgr, region, prior_mask=prior)
-    if info.get("ok") or info.get("replaced_px", 0) > 0:
+    out, info = erase_text_region(img_bgr, region)
+    replaced = info.get("replaced_px", 0)
+    if info.get("ok") or replaced > 0:
         img_bgr[:] = out
+        # Polish faint ghosts inside the tight box.
+        _polish_band(img_bgr, box)
         return True
     return False
 
@@ -317,7 +342,9 @@ def clean_watermark(src_path):
                     done = True
             except Exception:
                 continue
-        if not done:
+        # Fallback ALWAYS runs: a false template box must not block the
+        # real watermark elsewhere in the image.
+        if True:
             # Fallback: sliding-window search for faint/small watermarks
             # missed by template matching.
             try:
